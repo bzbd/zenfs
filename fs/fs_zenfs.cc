@@ -26,7 +26,7 @@
 
 namespace ROCKSDB_NAMESPACE {
 
-Status Superblock::DecodeFrom(Slice* input) {
+Status Superblock::DecodeFrom(Slice *input) {
   if (input->size() != ENCODED_SIZE) {
     return Status::Corruption("ZenFS Superblock",
                               "Error: Superblock size missmatch");
@@ -56,7 +56,7 @@ Status Superblock::DecodeFrom(Slice* input) {
   return Status::OK();
 }
 
-void Superblock::EncodeTo(std::string* output) {
+void Superblock::EncodeTo(std::string *output) {
   sequence_++; /* Ensure that this superblock representation is unique */
   output->clear();
   PutFixed32(output, magic_);
@@ -73,7 +73,7 @@ void Superblock::EncodeTo(std::string* output) {
   assert(output->length() == ENCODED_SIZE);
 }
 
-Status Superblock::CompatibleWith(ZonedBlockDevice* zbd) {
+Status Superblock::CompatibleWith(ZonedBlockDevice *zbd) {
   if (block_size_ != zbd->GetBlockSize())
     return Status::Corruption("ZenFS Superblock",
                               "Error: block size missmatch");
@@ -86,12 +86,12 @@ Status Superblock::CompatibleWith(ZonedBlockDevice* zbd) {
   return Status::OK();
 }
 
-IOStatus ZenMetaLog::AddRecord(const Slice& slice) {
+IOStatus ZenMetaLog::AddRecord(const Slice &slice) {
   uint32_t record_sz = slice.size();
-  const char* data = slice.data();
+  const char *data = slice.data();
   size_t phys_sz;
   uint32_t crc = 0;
-  char* buffer;
+  char *buffer;
   int ret;
   IOStatus s;
 
@@ -102,12 +102,12 @@ IOStatus ZenMetaLog::AddRecord(const Slice& slice) {
   assert(data != nullptr);
   assert((phys_sz % bs_) == 0);
 
-  ret = posix_memalign((void**)&buffer, sysconf(_SC_PAGESIZE), phys_sz);
+  ret = posix_memalign((void **)&buffer, sysconf(_SC_PAGESIZE), phys_sz);
   if (ret) return IOStatus::IOError("Failed to allocate memory");
 
   memset(buffer, 0, phys_sz);
 
-  crc = crc32c::Extend(crc, (const char*)&record_sz, sizeof(uint32_t));
+  crc = crc32c::Extend(crc, (const char *)&record_sz, sizeof(uint32_t));
   crc = crc32c::Extend(crc, data, record_sz);
   crc = crc32c::Mask(crc);
 
@@ -121,9 +121,9 @@ IOStatus ZenMetaLog::AddRecord(const Slice& slice) {
   return s;
 }
 
-IOStatus ZenMetaLog::Read(Slice* slice) {
+IOStatus ZenMetaLog::Read(Slice *slice) {
   int f = zbd_->GetReadFD();
-  const char* data = slice->data();
+  const char *data = slice->data();
   size_t read = 0;
   size_t to_read = slice->size();
   int ret;
@@ -139,7 +139,7 @@ IOStatus ZenMetaLog::Read(Slice* slice) {
   }
 
   while (read < to_read) {
-    ret = pread(f, (void*)(data + read), to_read - read, read_pos_);
+    ret = pread(f, (void *)(data + read), to_read - read, read_pos_);
 
     if (ret == -1 && errno == EINTR) continue;
     if (ret < 0) return IOStatus::IOError("Read failed");
@@ -151,7 +151,7 @@ IOStatus ZenMetaLog::Read(Slice* slice) {
   return IOStatus::OK();
 }
 
-IOStatus ZenMetaLog::ReadRecord(Slice* record, std::string* scratch) {
+IOStatus ZenMetaLog::ReadRecord(Slice *record, std::string *scratch) {
   Slice header;
   uint32_t record_sz = 0;
   uint32_t record_crc = 0;
@@ -183,7 +183,7 @@ IOStatus ZenMetaLog::ReadRecord(Slice* record, std::string* scratch) {
   s = Read(record);
   if (!s.ok()) return s;
 
-  actual_crc = crc32c::Value((const char*)&record_sz, sizeof(uint32_t));
+  actual_crc = crc32c::Value((const char *)&record_sz, sizeof(uint32_t));
   actual_crc = crc32c::Extend(actual_crc, record->data(), record->size());
 
   if (actual_crc != crc32c::Unmask(record_crc)) {
@@ -196,7 +196,7 @@ IOStatus ZenMetaLog::ReadRecord(Slice* record, std::string* scratch) {
   return IOStatus::OK();
 }
 
-ZenFS::ZenFS(ZonedBlockDevice* zbd, std::shared_ptr<FileSystem> aux_fs,
+ZenFS::ZenFS(ZonedBlockDevice *zbd, std::shared_ptr<FileSystem> aux_fs,
              std::shared_ptr<Logger> logger)
     : FileSystemWrapper(aux_fs), zbd_(zbd), logger_(logger) {
   Info(logger_, "ZenFS initializing");
@@ -220,18 +220,18 @@ ZenFS::~ZenFS() {
 }
 
 void ZenFS::LogFiles() {
-  std::map<std::string, ZoneFile*>::iterator it;
+  std::map<std::string, ZoneFile *>::iterator it;
   uint64_t total_size = 0;
 
   Info(logger_, "  Files:\n");
   for (it = files_.begin(); it != files_.end(); it++) {
-    ZoneFile* zFile = it->second;
-    std::vector<ZoneExtent*> extents = zFile->GetExtents();
+    ZoneFile *zFile = it->second;
+    std::vector<ZoneExtent *> extents = zFile->GetExtents();
 
     Info(logger_, "    %-45s sz: %lu lh: %d", it->first.c_str(),
          zFile->GetFileSize(), zFile->GetWriteLifeTimeHint());
     for (unsigned int i = 0; i < extents.size(); i++) {
-      ZoneExtent* extent = extents[i];
+      ZoneExtent *extent = extents[i];
       Info(logger_, "          Extent %u {start=0x%lx, zone=%u, len=%u} ", i,
            extent->start_,
            (uint32_t)(extent->zone_->start_ / zbd_->GetZoneSize()),
@@ -245,7 +245,7 @@ void ZenFS::LogFiles() {
 }
 
 void ZenFS::ClearFiles() {
-  std::map<std::string, ZoneFile*>::iterator it;
+  std::map<std::string, ZoneFile *>::iterator it;
   files_mtx_.lock();
   for (it = files_.begin(); it != files_.end(); it++) delete it->second;
   files_.clear();
@@ -253,7 +253,7 @@ void ZenFS::ClearFiles() {
 }
 
 /* Assumes that files_mutex_ is held */
-IOStatus ZenFS::WriteSnapshotLocked(ZenMetaLog* meta_log) {
+IOStatus ZenFS::WriteSnapshotLocked(ZenMetaLog *meta_log) {
   IOStatus s;
   std::string snapshot;
 
@@ -261,14 +261,14 @@ IOStatus ZenFS::WriteSnapshotLocked(ZenMetaLog* meta_log) {
   s = meta_log->AddRecord(snapshot);
   if (s.ok()) {
     for (auto it = files_.begin(); it != files_.end(); it++) {
-      ZoneFile* zoneFile = it->second;
+      ZoneFile *zoneFile = it->second;
       zoneFile->MetadataSynced();
     }
   }
   return s;
 }
 
-IOStatus ZenFS::WriteEndRecord(ZenMetaLog* meta_log) {
+IOStatus ZenFS::WriteEndRecord(ZenMetaLog *meta_log) {
   std::string endRecord;
 
   PutFixed32(&endRecord, kEndRecord);
@@ -277,7 +277,7 @@ IOStatus ZenFS::WriteEndRecord(ZenMetaLog* meta_log) {
 
 /* Assumes the files_mtx_ is held */
 IOStatus ZenFS::RollMetaZoneLocked() {
-  ZenMetaLog* new_meta_log;
+  ZenMetaLog *new_meta_log;
   Zone *new_meta_zone, *old_meta_zone;
   IOStatus s;
 
@@ -318,7 +318,7 @@ IOStatus ZenFS::RollMetaZoneLocked() {
   return s;
 }
 
-IOStatus ZenFS::PersistSnapshot(ZenMetaLog* meta_writer) {
+IOStatus ZenFS::PersistSnapshot(ZenMetaLog *meta_writer) {
   IOStatus s;
 
   files_mtx_.lock();
@@ -357,7 +357,7 @@ IOStatus ZenFS::PersistRecord(std::string record) {
   return s;
 }
 
-IOStatus ZenFS::SyncFileMetadata(ZoneFile* zoneFile) {
+IOStatus ZenFS::SyncFileMetadata(ZoneFile *zoneFile) {
   std::string fileRecord;
   std::string output;
 
@@ -378,8 +378,8 @@ IOStatus ZenFS::SyncFileMetadata(ZoneFile* zoneFile) {
   return s;
 }
 
-ZoneFile* ZenFS::GetFile(std::string fname) {
-  ZoneFile* zoneFile = nullptr;
+ZoneFile *ZenFS::GetFile(std::string fname) {
+  ZoneFile *zoneFile = nullptr;
   files_mtx_.lock();
   if (files_.find(fname) != files_.end()) {
     zoneFile = files_[fname];
@@ -389,7 +389,7 @@ ZoneFile* ZenFS::GetFile(std::string fname) {
 }
 
 IOStatus ZenFS::DeleteFile(std::string fname) {
-  ZoneFile* zoneFile = nullptr;
+  ZoneFile *zoneFile = nullptr;
   IOStatus s;
 
   zoneFile = GetFile(fname);
@@ -413,11 +413,11 @@ IOStatus ZenFS::DeleteFile(std::string fname) {
   return s;
 }
 
-IOStatus ZenFS::NewSequentialFile(const std::string& fname,
-                                  const FileOptions& file_opts,
-                                  std::unique_ptr<FSSequentialFile>* result,
-                                  IODebugContext* dbg) {
-  ZoneFile* zoneFile = GetFile(fname);
+IOStatus ZenFS::NewSequentialFile(const std::string &fname,
+                                  const FileOptions &file_opts,
+                                  std::unique_ptr<FSSequentialFile> *result,
+                                  IODebugContext *dbg) {
+  ZoneFile *zoneFile = GetFile(fname);
 
   Debug(logger_, "New sequential file: %s direct: %d\n", fname.c_str(),
         file_opts.use_direct_reads);
@@ -431,11 +431,11 @@ IOStatus ZenFS::NewSequentialFile(const std::string& fname,
   return IOStatus::OK();
 }
 
-IOStatus ZenFS::NewRandomAccessFile(const std::string& fname,
-                                    const FileOptions& file_opts,
-                                    std::unique_ptr<FSRandomAccessFile>* result,
-                                    IODebugContext* dbg) {
-  ZoneFile* zoneFile = GetFile(fname);
+IOStatus ZenFS::NewRandomAccessFile(const std::string &fname,
+                                    const FileOptions &file_opts,
+                                    std::unique_ptr<FSRandomAccessFile> *result,
+                                    IODebugContext *dbg) {
+  ZoneFile *zoneFile = GetFile(fname);
 
   Debug(logger_, "New random access file: %s direct: %d\n", fname.c_str(),
         file_opts.use_direct_reads);
@@ -449,11 +449,11 @@ IOStatus ZenFS::NewRandomAccessFile(const std::string& fname,
   return IOStatus::OK();
 }
 
-IOStatus ZenFS::NewWritableFile(const std::string& fname,
-                                const FileOptions& file_opts,
-                                std::unique_ptr<FSWritableFile>* result,
-                                IODebugContext* /*dbg*/) {
-  ZoneFile* zoneFile;
+IOStatus ZenFS::NewWritableFile(const std::string &fname,
+                                const FileOptions &file_opts,
+                                std::unique_ptr<FSWritableFile> *result,
+                                IODebugContext * /*dbg*/) {
+  ZoneFile *zoneFile;
   IOStatus s;
 
   Debug(logger_, "New writable file: %s direct: %d\n", fname.c_str(),
@@ -484,11 +484,11 @@ IOStatus ZenFS::NewWritableFile(const std::string& fname,
   return s;
 }
 
-IOStatus ZenFS::ReuseWritableFile(const std::string& fname,
-                                  const std::string& old_fname,
-                                  const FileOptions& file_opts,
-                                  std::unique_ptr<FSWritableFile>* result,
-                                  IODebugContext* dbg) {
+IOStatus ZenFS::ReuseWritableFile(const std::string &fname,
+                                  const std::string &old_fname,
+                                  const FileOptions &file_opts,
+                                  std::unique_ptr<FSWritableFile> *result,
+                                  IODebugContext *dbg) {
   Debug(logger_, "Reuse writable file: %s old name: %s\n", fname.c_str(),
         old_fname.c_str());
 
@@ -498,8 +498,8 @@ IOStatus ZenFS::ReuseWritableFile(const std::string& fname,
   return NewWritableFile(fname, file_opts, result, dbg);
 }
 
-IOStatus ZenFS::FileExists(const std::string& fname, const IOOptions& options,
-                           IODebugContext* dbg) {
+IOStatus ZenFS::FileExists(const std::string &fname, const IOOptions &options,
+                           IODebugContext *dbg) {
   Debug(logger_, "FileExists: %s \n", fname.c_str());
 
   if (GetFile(fname) == nullptr) {
@@ -509,10 +509,10 @@ IOStatus ZenFS::FileExists(const std::string& fname, const IOOptions& options,
   }
 }
 
-IOStatus ZenFS::ReopenWritableFile(const std::string& fname,
-                                   const FileOptions& options,
-                                   std::unique_ptr<FSWritableFile>* result,
-                                   IODebugContext* dbg) {
+IOStatus ZenFS::ReopenWritableFile(const std::string &fname,
+                                   const FileOptions &options,
+                                   std::unique_ptr<FSWritableFile> *result,
+                                   IODebugContext *dbg) {
   Debug(logger_, "Reopen writable file: %s \n", fname.c_str());
 
   if (GetFile(fname) != nullptr)
@@ -521,17 +521,17 @@ IOStatus ZenFS::ReopenWritableFile(const std::string& fname,
   return target()->NewWritableFile(fname, options, result, dbg);
 }
 
-IOStatus ZenFS::GetChildren(const std::string& dir, const IOOptions& options,
-                            std::vector<std::string>* result,
-                            IODebugContext* dbg) {
-  std::map<std::string, ZoneFile*>::iterator it;
+IOStatus ZenFS::GetChildren(const std::string &dir, const IOOptions &options,
+                            std::vector<std::string> *result,
+                            IODebugContext *dbg) {
+  std::map<std::string, ZoneFile *>::iterator it;
   std::vector<std::string> auxfiles;
   IOStatus s;
 
   Debug(logger_, "GetChildren: %s \n", dir.c_str());
 
   target()->GetChildren(ToAuxPath(dir), options, &auxfiles, dbg);
-  for (const auto& f : auxfiles) {
+  for (const auto &f : auxfiles) {
     if (f != "." && f != "..") result->push_back(f);
   }
 
@@ -555,10 +555,10 @@ IOStatus ZenFS::GetChildren(const std::string& dir, const IOOptions& options,
   return s;
 }
 
-IOStatus ZenFS::DeleteFile(const std::string& fname, const IOOptions& options,
-                           IODebugContext* dbg) {
+IOStatus ZenFS::DeleteFile(const std::string &fname, const IOOptions &options,
+                           IODebugContext *dbg) {
   IOStatus s;
-  ZoneFile* zoneFile = GetFile(fname);
+  ZoneFile *zoneFile = GetFile(fname);
 
   Debug(logger_, "Delete file: %s \n", fname.c_str());
 
@@ -576,10 +576,10 @@ IOStatus ZenFS::DeleteFile(const std::string& fname, const IOOptions& options,
   return s;
 }
 
-IOStatus ZenFS::GetFileModificationTime(const std::string& f,
-                                        const IOOptions& options,
-                                        uint64_t* mtime, IODebugContext* dbg) {
-  ZoneFile* zoneFile;
+IOStatus ZenFS::GetFileModificationTime(const std::string &f,
+                                        const IOOptions &options,
+                                        uint64_t *mtime, IODebugContext *dbg) {
+  ZoneFile *zoneFile;
   IOStatus s;
 
   Debug(logger_, "GetFileModificationTime: %s \n", f.c_str());
@@ -594,9 +594,9 @@ IOStatus ZenFS::GetFileModificationTime(const std::string& f,
   return s;
 }
 
-IOStatus ZenFS::GetFileSize(const std::string& f, const IOOptions& options,
-                            uint64_t* size, IODebugContext* dbg) {
-  ZoneFile* zoneFile;
+IOStatus ZenFS::GetFileSize(const std::string &f, const IOOptions &options,
+                            uint64_t *size, IODebugContext *dbg) {
+  ZoneFile *zoneFile;
   IOStatus s;
 
   Debug(logger_, "GetFileSize: %s \n", f.c_str());
@@ -613,9 +613,9 @@ IOStatus ZenFS::GetFileSize(const std::string& f, const IOOptions& options,
   return s;
 }
 
-IOStatus ZenFS::RenameFile(const std::string& f, const std::string& t,
-                           const IOOptions& options, IODebugContext* dbg) {
-  ZoneFile* zoneFile;
+IOStatus ZenFS::RenameFile(const std::string &f, const std::string &t,
+                           const IOOptions &options, IODebugContext *dbg) {
+  ZoneFile *zoneFile;
   IOStatus s;
 
   Debug(logger_, "Rename file: %s to : %s\n", f.c_str(), t.c_str());
@@ -647,13 +647,13 @@ IOStatus ZenFS::RenameFile(const std::string& f, const std::string& t,
   return s;
 }
 
-void ZenFS::EncodeSnapshotTo(std::string* output) {
-  std::map<std::string, ZoneFile*>::iterator it;
+void ZenFS::EncodeSnapshotTo(std::string *output) {
+  std::map<std::string, ZoneFile *>::iterator it;
   std::string files_string;
   PutFixed32(output, kCompleteFilesSnapshot);
   for (it = files_.begin(); it != files_.end(); it++) {
     std::string file_string;
-    ZoneFile* zFile = it->second;
+    ZoneFile *zFile = it->second;
 
     zFile->EncodeSnapshotTo(&file_string);
     PutLengthPrefixedSlice(&files_string, Slice(file_string));
@@ -661,8 +661,8 @@ void ZenFS::EncodeSnapshotTo(std::string* output) {
   PutLengthPrefixedSlice(output, Slice(files_string));
 }
 
-Status ZenFS::DecodeFileUpdateFrom(Slice* slice) {
-  ZoneFile* update = new ZoneFile(zbd_, "not_set", 0);
+Status ZenFS::DecodeFileUpdateFrom(Slice *slice) {
+  ZoneFile *update = new ZoneFile(zbd_, "not_set", 0);
   uint64_t id;
   Status s;
 
@@ -674,7 +674,7 @@ Status ZenFS::DecodeFileUpdateFrom(Slice* slice) {
 
   /* Check if this is an update to an existing file */
   for (auto it = files_.begin(); it != files_.end(); it++) {
-    ZoneFile* zFile = it->second;
+    ZoneFile *zFile = it->second;
     if (id == zFile->GetID()) {
       std::string oldName = zFile->GetFilename();
 
@@ -699,13 +699,13 @@ Status ZenFS::DecodeFileUpdateFrom(Slice* slice) {
   return Status::OK();
 }
 
-Status ZenFS::DecodeSnapshotFrom(Slice* input) {
+Status ZenFS::DecodeSnapshotFrom(Slice *input) {
   Slice slice;
 
   assert(files_.size() == 0);
 
   while (GetLengthPrefixedSlice(input, &slice)) {
-    ZoneFile* zoneFile = new ZoneFile(zbd_, "not_set", 0);
+    ZoneFile *zoneFile = new ZoneFile(zbd_, "not_set", 0);
     Status s = zoneFile->DecodeFrom(&slice);
     if (!s.ok()) return s;
 
@@ -717,7 +717,7 @@ Status ZenFS::DecodeSnapshotFrom(Slice* input) {
   return Status::OK();
 }
 
-void ZenFS::EncodeFileDeletionTo(ZoneFile* zoneFile, std::string* output) {
+void ZenFS::EncodeFileDeletionTo(ZoneFile *zoneFile, std::string *output) {
   std::string file_string;
 
   PutFixed64(&file_string, zoneFile->GetID());
@@ -727,7 +727,7 @@ void ZenFS::EncodeFileDeletionTo(ZoneFile* zoneFile, std::string* output) {
   PutLengthPrefixedSlice(output, Slice(file_string));
 }
 
-Status ZenFS::DecodeFileDeletionFrom(Slice* input) {
+Status ZenFS::DecodeFileDeletionFrom(Slice *input) {
   uint64_t fileID;
   std::string fileName;
   Slice slice;
@@ -742,7 +742,7 @@ Status ZenFS::DecodeFileDeletionFrom(Slice* input) {
   if (files_.find(fileName) == files_.end())
     return Status::Corruption("Zone file deletion: no such file");
 
-  ZoneFile* zoneFile = files_[fileName];
+  ZoneFile *zoneFile = files_[fileName];
   if (zoneFile->GetID() != fileID)
     return Status::Corruption("Zone file deletion: file ID missmatch");
 
@@ -752,7 +752,7 @@ Status ZenFS::DecodeFileDeletionFrom(Slice* input) {
   return Status::OK();
 }
 
-Status ZenFS::RecoverFrom(ZenMetaLog* log) {
+Status ZenFS::RecoverFrom(ZenMetaLog *log) {
   bool at_least_one_snapshot = false;
   std::string scratch;
   uint32_t tag = 0;
@@ -823,10 +823,10 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 
 /* Mount the filesystem by recovering form the latest valid metadata zone */
 Status ZenFS::Mount(bool readonly) {
-  std::vector<Zone*> metazones = zbd_->GetMetaZones();
+  std::vector<Zone *> metazones = zbd_->GetMetaZones();
   std::vector<std::unique_ptr<Superblock>> valid_superblocks;
   std::vector<std::unique_ptr<ZenMetaLog>> valid_logs;
-  std::vector<Zone*> valid_zones;
+  std::vector<Zone *> valid_zones;
   std::vector<std::pair<uint32_t, uint32_t>> seq_map;
 
   Status s;
@@ -879,7 +879,7 @@ Status ZenFS::Mount(bool readonly) {
      If that fails go to the previous as we might have crashed when rolling
      metadata zone.
   */
-  for (const auto& sm : seq_map) {
+  for (const auto &sm : seq_map) {
     uint32_t i = sm.second;
     std::string scratch;
     std::unique_ptr<ZenMetaLog> log = std::move(valid_logs[i]);
@@ -920,7 +920,7 @@ Status ZenFS::Mount(bool readonly) {
   }
 
   /* Free up old metadata zones, to get ready to roll */
-  for (const auto& sm : seq_map) {
+  for (const auto &sm : seq_map) {
     uint32_t i = sm.second;
     /* Don't reset the current metadata zone */
     if (i != r) {
@@ -959,9 +959,9 @@ Status ZenFS::Mount(bool readonly) {
 }
 
 Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold) {
-  std::vector<Zone*> metazones = zbd_->GetMetaZones();
+  std::vector<Zone *> metazones = zbd_->GetMetaZones();
   std::unique_ptr<ZenMetaLog> log;
-  Zone* meta_zone = nullptr;
+  Zone *meta_zone = nullptr;
   IOStatus s;
 
   if (aux_fs_path.length() > 255) {
@@ -986,7 +986,7 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold) {
 
   log.reset(new ZenMetaLog(zbd_, meta_zone));
 
-  Superblock* super = new Superblock(zbd_, aux_fs_path, finish_threshold);
+  Superblock *super = new Superblock(zbd_, aux_fs_path, finish_threshold);
   std::string super_string;
   super->EncodeTo(&super_string);
 
@@ -1008,7 +1008,7 @@ std::map<std::string, Env::WriteLifeTimeHint> ZenFS::GetWriteLifeTimeHints() {
   std::map<std::string, Env::WriteLifeTimeHint> hint_map;
 
   for (auto it = files_.begin(); it != files_.end(); it++) {
-    ZoneFile* zoneFile = it->second;
+    ZoneFile *zoneFile = it->second;
     std::string filename = it->first;
     hint_map.insert(std::make_pair(filename, zoneFile->GetWriteLifeTimeHint()));
   }
@@ -1020,7 +1020,7 @@ std::map<std::string, Env::WriteLifeTimeHint> ZenFS::GetWriteLifeTimeHints() {
 static std::string GetLogFilename(std::string bdev) {
   std::ostringstream ss;
   time_t t = time(0);
-  struct tm* log_start = std::localtime(&t);
+  struct tm *log_start = std::localtime(&t);
   char buf[40];
 
   std::strftime(buf, sizeof(buf), "%Y-%m-%d_%H:%M:%S.log", log_start);
@@ -1030,7 +1030,7 @@ static std::string GetLogFilename(std::string bdev) {
 }
 #endif
 
-Status NewZenFS(FileSystem** fs, const std::string& bdevname) {
+Status NewZenFS(FileSystem **fs, const std::string &bdevname) {
   std::shared_ptr<Logger> logger;
   Status s;
 
@@ -1043,7 +1043,7 @@ Status NewZenFS(FileSystem** fs, const std::string& bdevname) {
   }
 #endif
 
-  ZonedBlockDevice* zbd = new ZonedBlockDevice(bdevname, logger);
+  ZonedBlockDevice *zbd = new ZonedBlockDevice(bdevname, logger);
   IOStatus zbd_status = zbd->Open();
   if (!zbd_status.ok()) {
     Error(logger, "Failed to open zoned block device: %s",
@@ -1051,7 +1051,7 @@ Status NewZenFS(FileSystem** fs, const std::string& bdevname) {
     return Status::IOError(zbd_status.ToString());
   }
 
-  ZenFS* zenFS = new ZenFS(zbd, FileSystem::Default(), logger);
+  ZenFS *zenFS = new ZenFS(zbd, FileSystem::Default(), logger);
   s = zenFS->Mount(false);
   if (!s.ok()) {
     delete zenFS;
@@ -1064,17 +1064,17 @@ Status NewZenFS(FileSystem** fs, const std::string& bdevname) {
 
 std::map<std::string, std::string> ListZenFileSystems() {
   std::map<std::string, std::string> zenFileSystems;
-  DIR* dir = opendir("/sys/class/block");
-  struct dirent* entry;
+  DIR *dir = opendir("/sys/class/block");
+  struct dirent *entry;
 
   while (NULL != (entry = readdir(dir))) {
     if (entry->d_type == DT_LNK) {
       std::string zbdName = std::string(entry->d_name);
-      ZonedBlockDevice* zbd = new ZonedBlockDevice(zbdName, nullptr);
+      ZonedBlockDevice *zbd = new ZonedBlockDevice(zbdName, nullptr);
       IOStatus zbd_status = zbd->Open(true);
 
       if (zbd_status.ok()) {
-        std::vector<Zone*> metazones = zbd->GetMetaZones();
+        std::vector<Zone *> metazones = zbd->GetMetaZones();
         std::string scratch;
         Slice super_record;
         Status s;
@@ -1113,10 +1113,10 @@ extern "C" FactoryFunc<FileSystem> zenfs_filesystem_reg;
 
 FactoryFunc<FileSystem> zenfs_filesystem_reg =
     ObjectLibrary::Default()->Register<FileSystem>(
-        "zenfs://.*", [](const std::string& uri, std::unique_ptr<FileSystem>* f,
-                         std::string* errmsg) {
+        "zenfs://.*", [](const std::string &uri, std::unique_ptr<FileSystem> *f,
+                         std::string *errmsg) {
           std::string devID = uri;
-          FileSystem* fs = nullptr;
+          FileSystem *fs = nullptr;
           Status s;
 
           devID.replace(0, strlen("zenfs://"), "");

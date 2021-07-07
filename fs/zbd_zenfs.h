@@ -112,6 +112,7 @@ class ZonedBlockDevice {
   uint64_t GetZoneSize() { return zone_sz_; }
   uint32_t GetNrZones() { return nr_zones_; }
   std::vector<Zone *> GetMetaZones() { return meta_zones; }
+  std::vector<Zone *> GetReclaimZones();
 
   void SetFinishTreshold(uint32_t threshold) { finish_threshold_ = threshold; }
 

@@ -163,6 +163,19 @@ Zone *ZonedBlockDevice::GetIOZone(uint64_t offset) {
   return nullptr;
 }
 
+std::vector<Zone *> ZonedBlockDevice::GetReclaimZones(void) {
+  std::vector<Zone *> GCReclaimZones;
+  for (const auto z : io_zones) {
+    if ((!z->IsUsed()) && (!z->IsFull())) continue;
+    /* valid data in a zone is larger than 10% max capacity */
+    if ((z->max_capacity_ / z->used_capacity_ >= 10)) {
+      GCReclaimZones.push_back(z);
+    };
+  }
+
+  return GCReclaimZones;
+}
+
 ZonedBlockDevice::ZonedBlockDevice(std::string bdevname,
                                    std::shared_ptr<Logger> logger)
     : filename_("/dev/" + bdevname), logger_(logger) {
@@ -474,6 +487,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
     if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
       continue;
 
+    /* reset unused zone () */
     if (!z->IsUsed()) {
       if (!z->IsFull()) active_io_zones_--;
       s = z->Reset();
@@ -557,7 +571,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
 
 std::string ZonedBlockDevice::GetFilename() { return filename_; }
 uint32_t ZonedBlockDevice::GetBlockSize() { return block_sz_; }
-
 }  // namespace ROCKSDB_NAMESPACE
 
 #endif  // !defined(ROCKSDB_LITE) && !defined(OS_WIN)
