@@ -8,22 +8,8 @@
 
 #if !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 
-#include <errno.h>
-#include <libzbd/zbd.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <unistd.h>
-
-#include <atomic>
-#include <condition_variable>
-#include <mutex>
 #include <string>
-#include <utility>
 #include <vector>
-
-#include "rocksdb/env.h"
-#include "rocksdb/io_status.h"
 
 namespace ROCKSDB_NAMESPACE {
 
