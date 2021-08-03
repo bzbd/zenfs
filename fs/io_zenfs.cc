@@ -329,6 +329,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, bool async)
   if (active_zone_ == NULL) {
     active_zone_ = zbd_->AllocateZone(lifetime_);
     if (!active_zone_) {
+      Warn(logger_, "Zone allocation failure upon append starting, filename=%s, lifetime=%d\n", filename_, lifetime_);
       return IOStatus::NoSpace("Zone allocation failure\n");
     }
     extent_start_ = active_zone_->wp_;
@@ -342,6 +343,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, bool async)
       active_zone_->CloseWR();
       active_zone_ = zbd_->AllocateZone(lifetime_);
       if (!active_zone_) {
+        Warn(logger_, "Zone allocation failure when appending, filename=%s, left=%d\n", filename_, left);
         return IOStatus::NoSpace("Zone allocation failure\n");
       }
       extent_start_ = active_zone_->wp_;

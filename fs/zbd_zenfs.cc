@@ -574,7 +574,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
       if (!z->IsFull()) active_io_zones_--;
       s = z->Reset();
       if (!s.ok()) {
-        Debug(logger_, "Failed resetting zone !");
+        Warn(logger_, "Failed resetting zone !");
       }
       continue;
     }
@@ -584,7 +584,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
        * non-open-zone, finish the zone */
       s = z->Finish();
       if (!s.ok()) {
-        Debug(logger_, "Failed finishing zone");
+        Warn(logger_, "Failed finishing zone");
       }
       active_io_zones_--;
     }
@@ -617,9 +617,11 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
         finish_victim != nullptr) {
       s = finish_victim->Finish();
       if (!s.ok()) {
-        Debug(logger_, "Failed finishing zone");
+        Warn(logger_, "Failed finishing zone");
       }
       active_io_zones_--;
+      Warn(logger_, "active zone limit reached, and <start: 0x%lx> is forced to finish\n", finish_victim->start_);
+      LogZoneStats()
     }
 
     if (active_io_zones_.load() < max_nr_active_io_zones_) {
@@ -632,6 +634,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
           break;
         }
       }
+    } else {
+      Warn(logger_, "could not find a good match, but no zone could be finished\n");
     }
   }
 
