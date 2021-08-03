@@ -621,7 +621,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
       }
       active_io_zones_--;
       Warn(logger_, "active zone limit reached, and <start: 0x%lx> is forced to finish\n", finish_victim->start_);
-      LogZoneStats()
     }
 
     if (active_io_zones_.load() < max_nr_active_io_zones_) {
