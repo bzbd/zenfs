@@ -325,6 +325,9 @@ IOStatus ZenFS::RollMetaZoneLocked() {
   /* We've rolled successfully, we can reset the old zone now */
   if (s.ok()) old_meta_zone->Reset();
 
+  Info(logger_, "Size of new meta zone %ld\n",
+       meta_log_->GetZone()->wp_ - meta_log_->GetZone()->start_);
+
   return s;
 }
 
