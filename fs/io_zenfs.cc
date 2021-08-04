@@ -163,7 +163,7 @@ Status ZoneFile::MergeUpdate(ZoneFile* update) {
 }
 
 ZoneFile::ZoneFile(ZonedBlockDevice* zbd, std::string filename,
-                   uint64_t file_id)
+                   uint64_t file_id, std::shared_ptr<Logger> logger)
     : zbd_(zbd),
       active_zone_(NULL),
       extent_start_(0),
@@ -173,7 +173,8 @@ ZoneFile::ZoneFile(ZonedBlockDevice* zbd, std::string filename,
       filename_(filename),
       file_id_(file_id),
       nr_synced_extents_(0),
-      m_time_(0) {}
+      m_time_(0),
+      logger_(logger) {}
 
 std::string ZoneFile::GetFilename() { return filename_; }
 void ZoneFile::Rename(std::string name) { filename_ = name; }
@@ -329,6 +330,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, bool async)
   if (active_zone_ == NULL) {
     active_zone_ = zbd_->AllocateZone(lifetime_);
     if (!active_zone_) {
+      Warn(logger_, "Zone allocation failure upon append starting, filename=%s, lifetime=%d\n", filename_.c_str(), lifetime_);
       return IOStatus::NoSpace("Zone allocation failure\n");
     }
     extent_start_ = active_zone_->wp_;
@@ -342,6 +344,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, bool async)
       active_zone_->CloseWR();
       active_zone_ = zbd_->AllocateZone(lifetime_);
       if (!active_zone_) {
+        Warn(logger_, "Zone allocation failure when appending, filename=%s, left=%d\n", filename_.c_str(), left);
         return IOStatus::NoSpace("Zone allocation failure\n");
       }
       extent_start_ = active_zone_->wp_;

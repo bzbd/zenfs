@@ -325,6 +325,9 @@ IOStatus ZenFS::RollMetaZoneLocked() {
   /* We've rolled successfully, we can reset the old zone now */
   if (s.ok()) old_meta_zone->Reset();
 
+  Info(logger_, "Size of new meta zone %ld\n",
+       meta_log_->GetZone()->wp_ - meta_log_->GetZone()->start_);
+
   return s;
 }
 
@@ -481,7 +484,7 @@ IOStatus ZenFS::NewWritableFile(const std::string& fname,
     if (!s.ok()) return s;
   }
 
-  zoneFile = new ZoneFile(zbd_, fname, next_file_id_++);
+  zoneFile = new ZoneFile(zbd_, fname, next_file_id_++, logger_);
   zoneFile->SetFileModificationTime(time(0));
 
   /* Persist the creation of the file */
@@ -679,7 +682,7 @@ void ZenFS::EncodeSnapshotTo(std::string* output) {
 }
 
 Status ZenFS::DecodeFileUpdateFrom(Slice* slice) {
-  ZoneFile* update = new ZoneFile(zbd_, "not_set", 0);
+  ZoneFile* update = new ZoneFile(zbd_, "not_set", 0, logger_);
   uint64_t id;
   Status s;
 
@@ -722,7 +725,7 @@ Status ZenFS::DecodeSnapshotFrom(Slice* input) {
   assert(files_.size() == 0);
 
   while (GetLengthPrefixedSlice(input, &slice)) {
-    ZoneFile* zoneFile = new ZoneFile(zbd_, "not_set", 0);
+    ZoneFile* zoneFile = new ZoneFile(zbd_, "not_set", 0, logger_);
     Status s = zoneFile->DecodeFrom(&slice);
     if (!s.ok()) return s;
 
