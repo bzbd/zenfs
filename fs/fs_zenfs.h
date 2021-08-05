@@ -133,8 +133,8 @@ class ZenFS : public FileSystemWrapper {
   struct MetadataWriter : public ZonedWritableFile::MetadataWriter {
     ZenFS* zenFS;
     IOStatus Persist(ZoneFile* zoneFile) {
-      Debug(zenFS->GetLogger(), "Syncing metadata for: %s",
-            zoneFile->GetFilename().c_str());
+      // Debug(zenFS->GetLogger(), "Syncing metadata for: %s",
+      //       zoneFile->GetFilename().c_str());
       return zenFS->SyncFileMetadata(zoneFile);
     }
   };

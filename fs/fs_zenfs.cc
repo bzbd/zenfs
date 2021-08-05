@@ -1026,8 +1026,8 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
 
   log.reset(new ZenMetaLog(zbd_, meta_zone));
 
-  Superblock* super = new Superblock(zbd_, aux_fs_path,
-                          finish_threshold, max_open_limit, max_active_limit);
+  Superblock* super = new Superblock(zbd_, aux_fs_path, finish_threshold,
+                                     max_open_limit, max_active_limit);
   std::string super_string;
   super->EncodeTo(&super_string);
 
@@ -1096,7 +1096,6 @@ std::vector<ZoneStat> ZenFS::GetStat() {
   return stat;
 };
 
-#ifndef NDEBUG
 static std::string GetLogFilename(std::string bdev) {
   std::ostringstream ss;
   time_t t = time(0);
@@ -1108,20 +1107,17 @@ static std::string GetLogFilename(std::string bdev) {
 
   return ss.str();
 }
-#endif
 
 Status NewZenFS(FileSystem** fs, const std::string& bdevname) {
   std::shared_ptr<Logger> logger;
   Status s;
 
-#ifndef NDEBUG
   s = Env::Default()->NewLogger(GetLogFilename(bdevname), &logger);
   if (!s.ok()) {
     fprintf(stderr, "ZenFS: Could not create logger");
   } else {
     logger->SetInfoLogLevel(DEBUG_LEVEL);
   }
-#endif
 
   ZonedBlockDevice* zbd = new ZonedBlockDevice(bdevname, logger);
   IOStatus zbd_status = zbd->Open();
