@@ -43,8 +43,8 @@ class Superblock {
   /* Create a superblock for a filesystem covering the entire zoned block device
    */
   Superblock(ZonedBlockDevice* zbd, std::string aux_fs_path,
-             uint32_t finish_threshold,
-             uint32_t max_open_limit, uint32_t max_active_limit) {
+             uint32_t finish_threshold, uint32_t max_open_limit,
+             uint32_t max_active_limit) {
     std::string uuid = Env::Default()->GenerateUniqueId();
     int uuid_len =
         std::min(uuid.length(),
@@ -64,7 +64,7 @@ class Superblock {
     } else {
       max_open_limit_ = max_open_limit;
     }
-    
+
     if (max_active_limit == 0) {
       max_active_limit_ = zbd->GetMaxActiveZones();
     } else {
@@ -368,7 +368,9 @@ class ZenFS : public FileSystemWrapper {
 };
 #endif  // !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 
-Status NewZenFS(FileSystem** fs, const std::string& bdevname);
+Status NewZenFS(
+    FileSystem** fs, const std::string& bdevname, std::string bytedance_tags_,
+    std::shared_ptr<MetricsReporterFactory> metrics_reporter_factory_);
 std::map<std::string, std::string> ListZenFileSystems();
 
 }  // namespace ROCKSDB_NAMESPACE
