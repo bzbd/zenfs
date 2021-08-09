@@ -9,12 +9,12 @@
 #if !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 
 #include <errno.h>
+#include <libaio.h>
 #include <libzbd/zbd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <libaio.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -25,6 +25,7 @@
 
 #include "rocksdb/env.h"
 #include "rocksdb/io_status.h"
+#include "rocksdb/metrics_reporter.h"
 #include "rocksdb/plugin/zenfs/fs/zbd_stat.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -97,6 +98,11 @@ class ZonedBlockDevice {
  public:
   explicit ZonedBlockDevice(std::string bdevname,
                             std::shared_ptr<Logger> logger);
+  explicit ZonedBlockDevice(
+      std::string bdevname, std::shared_ptr<Logger> logger,
+      std::string bytedance_tags,
+      std::shared_ptr<MetricsReporterFactory> metrics_reporter_factory);
+
   virtual ~ZonedBlockDevice();
 
   IOStatus Open(bool readonly = false);
@@ -141,7 +147,7 @@ class ZonedBlockDevice {
       return false;
     }
   }
-  
+
   bool SetMaxOpenZones(uint32_t max_open) {
     if (max_open == 0) /* No limit */
       return true;
@@ -157,6 +163,29 @@ class ZonedBlockDevice {
   void NotifyIOZoneClosed();
 
   std::vector<ZoneStat> GetStat();
+
+  std::shared_ptr<MetricsReporterFactory> metrics_reporter_factory_;
+  std::string bytedance_tags_;
+
+  using LatencyReporter = HistReporterHandle &;
+  LatencyReporter write_latency_reporter_;
+  LatencyReporter read_latency_reporter_;
+  LatencyReporter sync_latency_reporter_;
+  LatencyReporter meta_alloc_latency_reporter_;
+  LatencyReporter io_alloc_latency_reporter_;
+  LatencyReporter roll_latency_reporter_;
+
+  using QPSReporter = CountReporterHandle &;
+  QPSReporter write_qps_reporter_;
+  QPSReporter read_qps_reporter_;
+  QPSReporter sync_qps_reporter_;
+  QPSReporter meta_alloc_qps_reporter_;
+  QPSReporter io_alloc_qps_reporter_;
+  QPSReporter roll_qps_reporter_;
+
+  using ThroughputReporter = CountReporterHandle &;
+  ThroughputReporter write_throughput_reporter_;
+  ThroughputReporter roll_throughput_reporter_;
 
  private:
   std::string ErrorToString(int err);

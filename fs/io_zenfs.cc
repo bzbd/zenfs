@@ -19,11 +19,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <iostream>
+
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "rocksdb/env.h"
+#include "rocksdb/metrics_reporter.h"
 #include "util/coding.h"
 #include "zbd_zenfs.h"
 
@@ -221,6 +224,9 @@ ZoneExtent* ZoneFile::GetExtent(uint64_t file_offset, uint64_t* dev_offset) {
 
 IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
                                   char* scratch, bool direct) {
+  LatencyHistGuard guard(&zbd_->read_latency_reporter_);
+  zbd_->read_qps_reporter_.AddCount(1);
+
   int f = zbd_->GetReadFD();
   int f_direct = zbd_->GetReadDirectFD();
   char* ptr;
@@ -437,6 +443,8 @@ IOStatus ZonedWritableFile::Truncate(uint64_t size,
 IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
                                   IODebugContext* /*dbg*/) {
   IOStatus s;
+  LatencyHistGuard guard(&zoneFile_->GetZbd()->sync_latency_reporter_);
+  zoneFile_->GetZbd()->sync_qps_reporter_.AddCount(1);
 
   buffer_mtx_.lock();
   s = FlushBuffer();
@@ -573,6 +581,9 @@ IOStatus ZonedWritableFile::Append(const Slice& data,
                                    const IOOptions& /*options*/,
                                    IODebugContext* /*dbg*/) {
   IOStatus s;
+  LatencyHistGuard guard(&zoneFile_->GetZbd()->write_latency_reporter_);
+  zoneFile_->GetZbd()->write_qps_reporter_.AddCount(1);
+  zoneFile_->GetZbd()->write_throughput_reporter_.AddCount(data.size());
 
   if (buffered) {
     buffer_mtx_.lock();
