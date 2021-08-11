@@ -23,6 +23,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <chrono>
+#include <iostream>
 
 #include "io_zenfs.h"
 #include "rocksdb/env.h"
@@ -83,6 +85,25 @@ void Zone::CloseWR() {
   if (capacity_ == 0) zbd_->NotifyIOZoneFull();
 }
 
+
+inline thread_local std::map<std::string, std::chrono::time_point<std::chrono::high_resolution_clock>> TimeTraceStart;
+inline thread_local std::map<std::string, std::chrono::duration<double, std::nano>> TimeTrace;
+
+#define DEBUG_TIME_TRACE_START(tag) \
+  TimeTraceStart[tag] = std::chrono::high_resolution_clock::now()
+
+#define DEBUG_TIME_TRACE_END(tag) \
+  TimeTrace[tag] = std::chrono::high_resolution_clock::now() - TimeTraceStart[tag]
+
+#define PRINT_DEBUG_TIME_TRACE()                               \
+  for (const auto& item : TimeTrace) {                         \
+    std::cout << "\t" << item.first.data() << " " << item.second.count() << "\t"; \
+  }                                                            \
+  std::cerr << std::endl
+
+// Limit for capture long latency (millisecond level)
+#define LONG_LATENCY_THRESHOLD 50 * 1000 * 1000
+
 IOStatus Zone::Reset() {
   size_t zone_sz = zbd_->GetZoneSize();
   unsigned int report = 1;
@@ -91,18 +112,24 @@ IOStatus Zone::Reset() {
 
   assert(!IsUsed());
 
+  DEBUG_TIME_TRACE_START("zbd_reset_zones");
   ret = zbd_reset_zones(zbd_->GetWriteFD(), start_, zone_sz);
   if (ret) return IOStatus::IOError("Zone reset failed\n");
+  DEBUG_TIME_TRACE_END("zbd_reset_zones");
 
+  DEBUG_TIME_TRACE_START("zbd_report_zones");
   ret = zbd_report_zones(zbd_->GetReadFD(), start_, zone_sz, ZBD_RO_ALL, &z,
                          &report);
+  DEBUG_TIME_TRACE_END("zbd_report_zones");
 
   if (ret || (report != 1)) return IOStatus::IOError("Zone report failed\n");
 
+  DEBUG_TIME_TRACE_START("zbd_zone_offline");
   if (zbd_zone_offline(&z))
     capacity_ = 0;
   else
     max_capacity_ = capacity_ = zbd_zone_capacity(&z);
+  DEBUG_TIME_TRACE_END("zbd_zone_offline");
 
   wp_ = start_;
   lifetime_ = Env::WLTH_NOT_SET;
@@ -621,8 +648,13 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
   LatencyHistGuard guard(&io_alloc_latency_reporter_);
   io_alloc_qps_reporter_.AddCount(1);
 
-  io_zones_mtx.lock();
+  DEBUG_TIME_TRACE_START("ALL");
 
+  DEBUG_TIME_TRACE_START("Acquire io_zones_mtx");
+  io_zones_mtx.lock();
+  DEBUG_TIME_TRACE_END("Acquire io_zones_mtx");
+
+  DEBUG_TIME_TRACE_START("Wait Lock");
   /* Make sure we are below the zone open limit */
   {
     std::unique_lock<std::mutex> lk(zone_resources_mtx_);
@@ -631,15 +663,22 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
       return false;
     });
   }
+  DEBUG_TIME_TRACE_END("Wait Lock");
 
   /* Reset any unused zones and finish used zones under capacity treshold*/
+
+  int idx = 0;
+  DEBUG_TIME_TRACE_START("Reset Zones");
   for (const auto z : io_zones) {
+    idx += 1;
     if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
       continue;
 
     if (!z->IsUsed()) {
       if (!z->IsFull()) active_io_zones_--;
+      auto start = std::chrono::high_resolution_clock::now();
       s = z->Reset();
+      std::cerr << "\tReset Zone " << idx << ": " << (std::chrono::high_resolution_clock::now() - start).count() << std::endl;
       if (!s.ok()) {
         Warn(logger_, "Failed resetting zone !");
       }
@@ -649,7 +688,9 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
     if ((z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
       /* If there is less than finish_threshold_% remaining capacity in a
        * non-open-zone, finish the zone */
+      auto start = std::chrono::high_resolution_clock::now();
       s = z->Finish();
+      std::cerr << "\tFinish Zone " << idx << ": " << (std::chrono::high_resolution_clock::now() - start).count() << std::endl;
       if (!s.ok()) {
         Warn(logger_, "Failed finishing zone");
       }
@@ -664,6 +705,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
       }
     }
   }
+  DEBUG_TIME_TRACE_END("Reset Zones");
 
   /* Try to fill an already open zone(with the best life time diff) */
   for (const auto z : io_zones) {
@@ -678,6 +720,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
 
   /* If we did not find a good match, allocate an empty one */
   if (best_diff >= LIFETIME_DIFF_NOT_GOOD) {
+    DEBUG_TIME_TRACE_START("Allocate New Zone");
     /* If we at the active io zone limit, finish an open zone(if available) with
      * least capacity left */
     if (active_io_zones_.load() == max_nr_active_io_zones_ &&
@@ -703,6 +746,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
     } else {
       Warn(logger_, "could not find a good match, but no zone could be finished\n");
     }
+    DEBUG_TIME_TRACE_END("Allocate New Zone");
   }
 
   if (allocated_zone) {
@@ -716,7 +760,15 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
   }
 
   io_zones_mtx.unlock();
+  DEBUG_TIME_TRACE_START("Log Stats");
   LogZoneStats();
+  DEBUG_TIME_TRACE_END("Log Stats");
+
+  DEBUG_TIME_TRACE_END("ALL");
+
+  if (TimeTrace["ALL"].count() >= 10000000) {
+    PRINT_DEBUG_TIME_TRACE();
+  }
 
   return allocated_zone;
 }
