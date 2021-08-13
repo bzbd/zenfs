@@ -563,7 +563,7 @@ ZonedBlockDevice::~ZonedBlockDevice() {
 
 unsigned int GetLifeTimeDiff(Env::WriteLifeTimeHint zone_lifetime,
                              Env::WriteLifeTimeHint file_lifetime) {
-  assert(file_lifetime <= Env::WLTH_EXTREME);
+  assert(file_lifetime >= 0 && file_lifetime <= Env::WLTH_EXTREME);
 
   if ((file_lifetime == Env::WLTH_NOT_SET) ||
       (file_lifetime == Env::WLTH_NONE)) {
@@ -611,7 +611,7 @@ void ZonedBlockDevice::ResetUnusedIOZones() {
   }
 }
 
-Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
+Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool wal_fast_path) {
   Zone *allocated_zone = nullptr;
   Zone *finish_victim = nullptr;
   unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
@@ -626,12 +626,13 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
   /* Make sure we are below the zone open limit */
   {
     std::unique_lock<std::mutex> lk(zone_resources_mtx_);
-    zone_resources_.wait(lk, [this] {
+    zone_resources_.wait(lk, [this, wal_fast_path] {
       if (open_io_zones_.load() < max_nr_open_io_zones_) return true;
       return false;
     });
   }
 
+  if (!wal_fast_path) {
   /* Reset any unused zones and finish used zones under capacity treshold*/
   for (const auto z : io_zones) {
     if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
@@ -661,6 +662,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
         finish_victim = z;
       } else if (finish_victim->capacity_ > z->capacity_) {
         finish_victim = z;
+        }
       }
     }
   }
@@ -677,7 +679,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime) {
   }
 
   /* If we did not find a good match, allocate an empty one */
-  if (best_diff >= LIFETIME_DIFF_NOT_GOOD) {
+  if (!wal_fast_path && best_diff >= LIFETIME_DIFF_NOT_GOOD) {
     /* If we at the active io zone limit, finish an open zone(if available) with
      * least capacity left */
     if (active_io_zones_.load() == max_nr_active_io_zones_ &&

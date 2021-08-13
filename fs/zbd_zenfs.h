@@ -110,7 +110,7 @@ class ZonedBlockDevice {
 
   Zone *GetIOZone(uint64_t offset);
 
-  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime);
+  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool wal_fast_path);
   Zone *AllocateMetaZone();
 
   uint64_t GetFreeSpace();
