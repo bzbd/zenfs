@@ -55,8 +55,11 @@ class Zone {
   std::atomic<long> used_capacity_;
   struct zenfs_aio_ctx wr_ctx;
 
+  // Must hold zbd_->zone_operation_mtx_
   IOStatus Reset();
+  // Must hold zbd_->zone_operation_mtx_
   IOStatus Finish();
+  // Must hold zbd_->zone_operation_mtx_
   IOStatus Close();
 
   IOStatus Append(char *data, uint32_t size);
@@ -78,7 +81,7 @@ class ZonedBlockDevice {
   uint64_t zone_sz_;
   uint32_t nr_zones_;
   std::vector<Zone *> io_zones;
-  std::mutex io_zones_mtx;
+  std::mutex zone_operation_mtx_;
   std::vector<Zone *> meta_zones;
   int read_f_;
   int read_direct_f_;
@@ -89,8 +92,9 @@ class ZonedBlockDevice {
 
   std::atomic<long> active_io_zones_;
   std::atomic<long> open_io_zones_;
-  std::condition_variable zone_resources_;
-  std::mutex zone_resources_mtx_; /* Protects active/open io zones */
+  std::condition_variable zone_avail_cond_;
+  std::condition_variable zone_fast_avail_cond_;
+  std::mutex zone_avail_mtx_;
 
   uint32_t max_nr_active_io_zones_;
   uint32_t max_nr_open_io_zones_;
@@ -110,7 +114,7 @@ class ZonedBlockDevice {
 
   Zone *GetIOZone(uint64_t offset);
 
-  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime);
+  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal_fast_path);
   Zone *AllocateMetaZone();
 
   uint64_t GetFreeSpace();
@@ -120,7 +124,13 @@ class ZonedBlockDevice {
   std::string GetFilename();
   uint32_t GetBlockSize();
 
+  std::shared_ptr<Logger> GetLogger() { return logger_; }
+  
+  // Should only be called on initialization.
   void ResetUnusedIOZones();
+
+  // Reported data may not be accurate because zone operation may take place
+  // when we are calculating statistics.
   void LogZoneStats();
   void LogZoneUsage();
 
