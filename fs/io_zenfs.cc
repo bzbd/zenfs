@@ -165,6 +165,11 @@ Status ZoneFile::MergeUpdate(ZoneFile* update) {
   return Status::OK();
 }
 
+inline bool ends_with(std::string const& value, std::string const& ending) {
+  if (ending.size() > value.size()) return false;
+  return std::equal(ending.rbegin(), ending.rend(), value.rbegin());
+}
+
 ZoneFile::ZoneFile(ZonedBlockDevice* zbd, std::string filename,
                    uint64_t file_id, std::shared_ptr<Logger> logger)
     : zbd_(zbd),
@@ -177,7 +182,16 @@ ZoneFile::ZoneFile(ZonedBlockDevice* zbd, std::string filename,
       file_id_(file_id),
       nr_synced_extents_(0),
       m_time_(0),
-      logger_(logger) {}
+      logger_(logger),
+      is_wal_(false) {
+  // Generally, we should let our user to decide whether a file is WAL
+  // or not. However, current TerarkDB environment doesn't provide such
+  // capability to hint. Therefore, we simply check the suffix of filename
+  // here.
+  if (ends_with(filename_, ".log")) {
+    is_wal_ = true;
+  }
+}
 
 std::string ZoneFile::GetFilename() { return filename_; }
 void ZoneFile::Rename(std::string name) { filename_ = name; }
@@ -334,7 +348,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, bool async)
   IOStatus s;
 
   if (active_zone_ == NULL) {
-    active_zone_ = zbd_->AllocateZone(lifetime_);
+    active_zone_ = zbd_->AllocateZone(lifetime_, is_wal_);
     if (!active_zone_) {
       Warn(logger_, "Zone allocation failure upon append starting, filename=%s, lifetime=%d\n", filename_.c_str(), lifetime_);
       return IOStatus::NoSpace("Zone allocation failure\n");
@@ -348,7 +362,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, bool async)
       PushExtent();
 
       active_zone_->CloseWR();
-      active_zone_ = zbd_->AllocateZone(lifetime_);
+      active_zone_ = zbd_->AllocateZone(lifetime_, is_wal_);
       if (!active_zone_) {
         Warn(logger_, "Zone allocation failure when appending, filename=%s, left=%d\n", filename_.c_str(), left);
         return IOStatus::NoSpace("Zone allocation failure\n");

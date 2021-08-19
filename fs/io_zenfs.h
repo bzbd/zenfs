@@ -54,6 +54,7 @@ class ZoneFile {
   time_t m_time_;
   
   std::shared_ptr<Logger> logger_;
+  bool is_wal_;
 
  public:
   explicit ZoneFile(ZonedBlockDevice* zbd, std::string filename,
