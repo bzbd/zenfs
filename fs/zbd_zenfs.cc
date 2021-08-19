@@ -626,7 +626,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   /* Make sure we are below the zone open limit */
   {
     std::unique_lock<std::mutex> lk(zone_resources_mtx_);
-    zone_resources_.wait(lk, [this, wal_fast_path] {
+    zone_resources_.wait(lk, [this] {
       if (open_io_zones_.load() < max_nr_open_io_zones_) return true;
       return false;
     });
