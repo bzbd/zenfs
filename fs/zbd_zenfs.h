@@ -56,6 +56,7 @@ class Zone {
   struct zenfs_aio_ctx wr_ctx;
 
   IOStatus Reset();
+  IOStatus FakeReset();
   IOStatus Finish();
   IOStatus Close();
 

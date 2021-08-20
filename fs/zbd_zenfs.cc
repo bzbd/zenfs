@@ -20,6 +20,7 @@
 
 #include <fstream>
 #include <sstream>
+#include <iostream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -627,44 +628,9 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   {
     std::unique_lock<std::mutex> lk(zone_resources_mtx_);
     zone_resources_.wait(lk, [this] {
-      if (open_io_zones_.load() < max_nr_open_io_zones_) return true;
+      if (open_io_zones_.load() < max_nr_open_io_zones_ && active_io_zones_.load() < max_nr_active_io_zones_) return true;
       return false;
     });
-  }
-
-  if (!wal_fast_path) {
-    /* Reset any unused zones and finish used zones under capacity threshold */
-    for (const auto z : io_zones) {
-      if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
-        continue;
-
-      if (!z->IsUsed()) {
-        if (!z->IsFull()) active_io_zones_--;
-        s = z->Reset();
-        if (!s.ok()) {
-          Warn(logger_, "Failed resetting zone !");
-        }
-        continue;
-      }
-
-      if ((z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
-        /* If there is less than finish_threshold_% remaining capacity in a
-        * non-open-zone, finish the zone */
-        s = z->Finish();
-        if (!s.ok()) {
-          Warn(logger_, "Failed finishing zone");
-        }
-        active_io_zones_--;
-      }
-
-      if (!z->IsFull()) {
-        if (finish_victim == nullptr) {
-          finish_victim = z;
-        } else if (finish_victim->capacity_ > z->capacity_) {
-          finish_victim = z;
-        }
-      }
-    }
   }
 
   /* Try to fill an already open zone(with the best life time diff) */
@@ -678,37 +644,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     }
   }
 
-  if (wal_fast_path && allocated_zone == nullptr) {
-    /* allocate a new zone for WAL */
-    if (active_io_zones_.load() < max_nr_active_io_zones_) {
-      for (const auto z : io_zones) {
-        if ((!z->open_for_write_) && z->IsEmpty()) {
-          z->lifetime_ = file_lifetime;
-          allocated_zone = z;
-          active_io_zones_++;
-          new_zone = 1;
-          break;
-        }
-      }
-    } else {
-      Warn(logger_, "exceed active zone limit in WAL fastpath\n");
-    }
-  }
-
   /* If we did not find a good match, allocate an empty one */
-  if (!wal_fast_path && best_diff >= LIFETIME_DIFF_NOT_GOOD) {
-    /* If we at the active io zone limit, finish an open zone(if available) with
-     * least capacity left */
-    if (active_io_zones_.load() == max_nr_active_io_zones_ &&
-        finish_victim != nullptr) {
-      s = finish_victim->Finish();
-      if (!s.ok()) {
-        Warn(logger_, "Failed finishing zone");
-      }
-      active_io_zones_--;
-      Warn(logger_, "active zone limit reached, and <start: 0x%lx> is forced to finish\n", finish_victim->start_);
-    }
-
+  if (best_diff >= LIFETIME_DIFF_NOT_GOOD) {
     if (active_io_zones_.load() < max_nr_active_io_zones_) {
       for (const auto z : io_zones) {
         if ((!z->open_for_write_) && z->IsEmpty()) {
@@ -720,6 +657,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
         }
       }
     } else {
+      std::cerr << "Exceed active zone limit" << std::endl;
       Warn(logger_, "could not find a good match, but no zone could be finished\n");
     }
   }
@@ -732,6 +670,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
           "Allocating zone(new=%d) start: 0x%lx wp: 0x%lx lt: %d file lt: %d\n",
           new_zone, allocated_zone->start_, allocated_zone->wp_,
           allocated_zone->lifetime_, file_lifetime);
+  } else {
+    std::cerr << "No available zone" << std::endl;
   }
 
   io_zones_mtx.unlock();
