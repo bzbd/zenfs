@@ -716,8 +716,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   LogZoneStatsInternal();
   io_zones_mtx.unlock();
-  zone_resources_.notify_one();
-  zone_resources_fast_.notify_one();
 
   return allocated_zone;
 }
