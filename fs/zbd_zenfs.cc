@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -280,6 +281,9 @@ static std::string roll_qps_metric_name = "zenfs_roll_qps";
 static std::string write_throughput_metric_name = "zenfs_write_throughput";
 static std::string roll_throughput_metric_name = "zenfs_roll_throughput";
 
+static std::string active_zones_metric_name = "zenfs_active_zones";
+static std::string open_zones_metric_name = "zenfs_open_zones";
+
 ZonedBlockDevice::ZonedBlockDevice(
     std::string bdevname, std::shared_ptr<Logger> logger,
     std::string bytedance_tags,
@@ -321,7 +325,11 @@ ZonedBlockDevice::ZonedBlockDevice(
       write_throughput_reporter_(*metrics_reporter_factory_->BuildCountReporter(
           write_throughput_metric_name, bytedance_tags_, logger.get())),
       roll_throughput_reporter_(*metrics_reporter_factory_->BuildCountReporter(
-          roll_throughput_metric_name, bytedance_tags_, logger.get())) {
+          roll_throughput_metric_name, bytedance_tags_, logger.get())),
+      active_zones_(*metrics_reporter_factory_->BuildHistReporter(
+          active_zones_metric_name, bytedance_tags_, logger.get())),
+      open_zones_(*metrics_reporter_factory_->BuildHistReporter(
+          open_zones_metric_name, bytedance_tags_, logger.get())) {
   Info(logger_, "New Zoned Block Device: %s (with metrics enabled)",
        filename_.c_str());
 }
@@ -472,15 +480,14 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
 void ZonedBlockDevice::NotifyIOZoneFull() {
   const std::lock_guard<std::mutex> lock(zone_resources_mtx_);
   active_io_zones_--;
-  zone_resources_fast_.notify_one();
-  zone_resources_.notify_one();
+  zone_resources_.notify_all();
 }
 
 void ZonedBlockDevice::NotifyIOZoneClosed() {
   const std::lock_guard<std::mutex> lock(zone_resources_mtx_);
   open_io_zones_--;
-  zone_resources_fast_.notify_one();
-  zone_resources_.notify_one();
+  std::cerr << "closed " << open_io_zones_ << std::endl;
+  zone_resources_.notify_all();
 }
 
 uint64_t ZonedBlockDevice::GetFreeSpace() {
@@ -630,17 +637,15 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   io_alloc_qps_reporter_.AddCount(1);
 
   std::unique_lock<std::mutex> lk(zone_resources_mtx_);
-  if (wal_fast_path) {
-    zone_resources_fast_.wait(lk, [this] {
+
+  zone_resources_.wait(lk, [this, wal_fast_path] {
+    if (wal_fast_path) {
       if (open_io_zones_.load() < max_nr_open_io_zones_) return true;
-      return false;
-    });
-  } else {
-    zone_resources_.wait(lk, [this] {
-      if (open_io_zones_.load() < max_nr_open_io_zones_ - 3) return true;
-      return false;
-    });
-  }
+    } else {
+      if (open_io_zones_.load() < 3) return true;
+    }
+    return false;
+  });
 
   // We hold the zone_resources_mtx_ lock and continue other operations
 
@@ -706,6 +711,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     assert(!allocated_zone->open_for_write_);
     allocated_zone->open_for_write_ = true;
     open_io_zones_++;
+    std::cerr << "opened " << open_io_zones_ << std::endl;
     Debug(logger_,
           "Allocating zone(new=%d) start: 0x%lx wp: 0x%lx lt: %d file lt: %d\n",
           new_zone, allocated_zone->start_, allocated_zone->wp_,
@@ -713,7 +719,13 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   }
 
   LogZoneStatsInternal();
+
+  active_zones_.AddRecord(active_io_zones_);
+  open_zones_.AddRecord(open_io_zones_);
   io_zones_mtx.unlock();
+  lk.unlock();
+
+  zone_resources_.notify_all();
 
   return allocated_zone;
 }

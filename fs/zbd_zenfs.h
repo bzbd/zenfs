@@ -90,7 +90,6 @@ class ZonedBlockDevice {
   std::atomic<long> active_io_zones_;
   std::atomic<long> open_io_zones_;
   std::condition_variable zone_resources_;
-  std::condition_variable zone_resources_fast_;
   std::mutex zone_resources_mtx_; /* Protects active/open io zones */
 
   uint32_t max_nr_active_io_zones_;
@@ -189,6 +188,10 @@ class ZonedBlockDevice {
   using ThroughputReporter = CountReporterHandle &;
   ThroughputReporter write_throughput_reporter_;
   ThroughputReporter roll_throughput_reporter_;
+
+  using DataReporter = HistReporterHandle &;
+  DataReporter active_zones_;
+  DataReporter open_zones_;
 
  private:
   std::string ErrorToString(int err);
