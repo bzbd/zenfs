@@ -625,7 +625,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
   int new_zone = 0;
   Status s;
-  int reset_zone_cnt = 0;
 
   LatencyHistGuard guard(&io_alloc_latency_reporter_);
   io_alloc_qps_reporter_.AddCount(1);
@@ -657,13 +656,10 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     // bounded latency: we reset at most 3 zones
     
     if (!z->IsUsed()) {
-      if (reset_zone_cnt < 3) {
-        if (!z->IsFull()) active_io_zones_--;
-        s = z->Reset();
-        reset_zone_cnt++;
-        if (!s.ok()) {
-          Warn(logger_, "Failed resetting zone !");
-        }
+      if (!z->IsFull()) active_io_zones_--;
+      s = z->Reset();
+      if (!s.ok()) {
+        Warn(logger_, "Failed resetting zone !");
       }
       continue;
     }
