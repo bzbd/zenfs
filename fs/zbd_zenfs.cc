@@ -472,15 +472,15 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
 void ZonedBlockDevice::NotifyIOZoneFull() {
   const std::lock_guard<std::mutex> lock(zone_resources_mtx_);
   active_io_zones_--;
-  zone_resources_.notify_one();
   zone_resources_fast_.notify_one();
+  zone_resources_.notify_one();
 }
 
 void ZonedBlockDevice::NotifyIOZoneClosed() {
   const std::lock_guard<std::mutex> lock(zone_resources_mtx_);
   open_io_zones_--;
-  zone_resources_.notify_one();
   zone_resources_fast_.notify_one();
+  zone_resources_.notify_one();
 }
 
 uint64_t ZonedBlockDevice::GetFreeSpace() {
@@ -631,13 +631,13 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   std::unique_lock<std::mutex> lk(zone_resources_mtx_);
   if (wal_fast_path) {
-    zone_resources_.wait(lk, [this] {
-      if (open_io_zones_.load() < max_nr_open_io_zones_ - 3) return true;
+    zone_resources_fast_.wait(lk, [this] {
+      if (open_io_zones_.load() < max_nr_open_io_zones_) return true;
       return false;
     });
   } else {
-    zone_resources_fast_.wait(lk, [this] {
-      if (open_io_zones_.load() < max_nr_open_io_zones_) return true;
+    zone_resources_.wait(lk, [this] {
+      if (open_io_zones_.load() < max_nr_open_io_zones_ - 3) return true;
       return false;
     });
   }
@@ -653,8 +653,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
       continue;
 
-    // bounded latency: we reset at most 3 zones
-    
     if (!z->IsUsed()) {
       if (!z->IsFull()) active_io_zones_--;
       s = z->Reset();
