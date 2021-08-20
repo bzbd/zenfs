@@ -90,6 +90,7 @@ class ZonedBlockDevice {
   std::atomic<long> active_io_zones_;
   std::atomic<long> open_io_zones_;
   std::condition_variable zone_resources_;
+  std::condition_variable zone_resources_fast_;
   std::mutex zone_resources_mtx_; /* Protects active/open io zones */
 
   uint32_t max_nr_active_io_zones_;
@@ -122,6 +123,7 @@ class ZonedBlockDevice {
 
   void ResetUnusedIOZones();
   void LogZoneStats();
+  void LogZoneStatsInternal();
   void LogZoneUsage();
 
   int GetReadFD() { return read_f_; }
@@ -173,6 +175,7 @@ class ZonedBlockDevice {
   LatencyReporter sync_latency_reporter_;
   LatencyReporter meta_alloc_latency_reporter_;
   LatencyReporter io_alloc_latency_reporter_;
+  LatencyReporter io_alloc_actual_latency_reporter_;
   LatencyReporter roll_latency_reporter_;
 
   using QPSReporter = CountReporterHandle &;
