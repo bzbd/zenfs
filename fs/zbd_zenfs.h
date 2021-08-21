@@ -173,6 +173,7 @@ class ZonedBlockDevice {
   LatencyReporter sync_latency_reporter_;
   LatencyReporter meta_alloc_latency_reporter_;
   LatencyReporter io_alloc_latency_reporter_;
+  LatencyReporter io_alloc_actual_latency_reporter_;
   LatencyReporter roll_latency_reporter_;
 
   using QPSReporter = CountReporterHandle &;
@@ -186,6 +187,10 @@ class ZonedBlockDevice {
   using ThroughputReporter = CountReporterHandle &;
   ThroughputReporter write_throughput_reporter_;
   ThroughputReporter roll_throughput_reporter_;
+
+  using DataReporter = HistReporterHandle &;
+  DataReporter active_zones_reporter_;
+  DataReporter open_zones_reporter_;
 
  private:
   std::string ErrorToString(int err);
