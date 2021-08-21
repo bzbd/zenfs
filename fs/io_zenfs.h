@@ -54,6 +54,7 @@ class ZoneFile {
   time_t m_time_;
   
   std::shared_ptr<Logger> logger_;
+  bool is_wal_;
 
  public:
   explicit ZoneFile(ZonedBlockDevice* zbd, std::string filename,
@@ -97,6 +98,7 @@ class ZoneFile {
 
   uint64_t GetID() { return file_id_; }
   size_t GetUniqueId(char* id, size_t max_size);
+  ZonedBlockDevice* GetZbd() { return zbd_; }
 };
 
 class ZonedWritableFile : public FSWritableFile {
