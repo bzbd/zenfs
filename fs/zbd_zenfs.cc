@@ -266,6 +266,7 @@ static std::string write_latency_metric_name = "zenfs_write_latency";
 static std::string read_latency_metric_name = "zenfs_read_latency";
 static std::string sync_latency_metric_name = "zenfs_sync_latency";
 static std::string io_alloc_latency_metric_name = "zenfs_io_alloc_latency";
+static std::string io_alloc_actual_latency_metric_name = "zenfs_io_actual_alloc_latency";
 static std::string meta_alloc_latency_metric_name = "zenfs_meta_alloc_latency";
 static std::string roll_latency_metric_name = "zenfs_roll_latency";
 
@@ -278,6 +279,9 @@ static std::string roll_qps_metric_name = "zenfs_roll_qps";
 
 static std::string write_throughput_metric_name = "zenfs_write_throughput";
 static std::string roll_throughput_metric_name = "zenfs_roll_throughput";
+
+static std::string active_zones_metric_name = "zenfs_active_zones";
+static std::string open_zones_metric_name = "zenfs_open_zones";
 
 ZonedBlockDevice::ZonedBlockDevice(
     std::string bdevname, std::shared_ptr<Logger> logger,
@@ -301,6 +305,8 @@ ZonedBlockDevice::ZonedBlockDevice(
               meta_alloc_latency_metric_name, bytedance_tags_, logger.get())),
       io_alloc_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
           io_alloc_latency_metric_name, bytedance_tags_, logger.get())),
+      io_alloc_actual_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
+          io_alloc_actual_latency_metric_name, bytedance_tags_, logger.get())),
       roll_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
           roll_latency_metric_name, bytedance_tags_, logger.get())),
       write_qps_reporter_(*metrics_reporter_factory_->BuildCountReporter(
@@ -318,7 +324,11 @@ ZonedBlockDevice::ZonedBlockDevice(
       write_throughput_reporter_(*metrics_reporter_factory_->BuildCountReporter(
           write_throughput_metric_name, bytedance_tags_, logger.get())),
       roll_throughput_reporter_(*metrics_reporter_factory_->BuildCountReporter(
-          roll_throughput_metric_name, bytedance_tags_, logger.get())) {
+          roll_throughput_metric_name, bytedance_tags_, logger.get())),
+      active_zones_reporter_(*metrics_reporter_factory_->BuildHistReporter(
+          active_zones_metric_name, bytedance_tags_, logger.get())),
+      open_zones_reporter_(*metrics_reporter_factory_->BuildHistReporter(
+          open_zones_metric_name, bytedance_tags_, logger.get())) {
   Info(logger_, "New Zoned Block Device: %s (with metrics enabled)",
        filename_.c_str());
 }
@@ -632,6 +642,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     });
   }
 
+  LatencyHistGuard guard_actual(&io_alloc_actual_latency_reporter_);
+
   if (!wal_fast_path) {
     /* Reset any unused zones and finish used zones under capacity threshold */
     for (const auto z : io_zones) {
@@ -736,6 +748,9 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   io_zones_mtx.unlock();
   LogZoneStats();
+
+  open_zones_reporter_.AddRecord(open_io_zones_);
+  active_zones_reporter_.AddRecord(active_io_zones_);
 
   return allocated_zone;
 }
