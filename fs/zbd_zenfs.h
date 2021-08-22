@@ -90,7 +90,6 @@ class ZonedBlockDevice {
   std::atomic<long> active_io_zones_;
   std::atomic<long> open_io_zones_;
   std::condition_variable zone_resources_;
-  std::mutex zone_resources_mtx_; /* Protects active/open io zones */
 
   uint32_t max_nr_active_io_zones_;
   uint32_t max_nr_open_io_zones_;
@@ -191,6 +190,8 @@ class ZonedBlockDevice {
   using DataReporter = HistReporterHandle &;
   DataReporter active_zones_reporter_;
   DataReporter open_zones_reporter_;
+
+  std::mutex zone_resources_mtx_; /* Protects active/open io zones */
 
  private:
   std::string ErrorToString(int err);
