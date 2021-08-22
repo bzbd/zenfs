@@ -513,6 +513,11 @@ uint64_t ZonedBlockDevice::GetReclaimableSpace() {
 }
 
 void ZonedBlockDevice::LogZoneStats() {
+  const std::lock_guard<std::mutex> lock(io_zones_mtx);
+  LogZoneStatsInternal();  
+}
+
+void ZonedBlockDevice::LogZoneStatsInternal() {
   uint64_t used_capacity = 0;
   uint64_t reclaimable_capacity = 0;
   uint64_t reclaimables_max_capacity = 0;
@@ -727,8 +732,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
           allocated_zone->lifetime_, file_lifetime);
   }
 
+  LogZoneStatsInternal();
   io_zones_mtx.unlock();
-  LogZoneStats();
 
   open_zones_reporter_.AddRecord(open_io_zones_);
   active_zones_reporter_.AddRecord(active_io_zones_);
