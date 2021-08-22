@@ -76,6 +76,8 @@ void Zone::CloseWR() {
   Sync();
   open_for_write_ = false;
 
+  const std::lock_guard<std::mutex> lock(zbd_->zone_resources_mtx_);
+
   if (Close().ok()) {
     zbd_->NotifyIOZoneClosed();
   }
@@ -477,13 +479,11 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
 }
 
 void ZonedBlockDevice::NotifyIOZoneFull() {
-  const std::lock_guard<std::mutex> lock(zone_resources_mtx_);
   active_io_zones_--;
   zone_resources_.notify_one();
 }
 
 void ZonedBlockDevice::NotifyIOZoneClosed() {
-  const std::lock_guard<std::mutex> lock(zone_resources_mtx_);
   open_io_zones_--;
   zone_resources_.notify_one();
 }
