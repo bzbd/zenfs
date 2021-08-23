@@ -117,7 +117,8 @@ class ZonedBlockDevice {
 
   Zone *GetIOZone(uint64_t offset);
 
-  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal, uint64_t timeout_ns);
+  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal,
+                     uint64_t timeout_ns);
   Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
   Zone *AllocateMetaZone();
 
