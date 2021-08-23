@@ -79,6 +79,7 @@ class ZonedBlockDevice {
   uint32_t nr_zones_;
   std::vector<Zone *> io_zones;
   std::mutex io_zones_mtx;
+  std::mutex wal_zones_mtx;
   std::vector<Zone *> meta_zones;
   int read_f_;
   int read_direct_f_;
@@ -87,13 +88,19 @@ class ZonedBlockDevice {
   std::shared_ptr<Logger> logger_;
   uint32_t finish_threshold_ = 0;
 
+  // If a thread is allocating a zone fro WAL files, other
+  // thread shouldn't take `io_zones_mtx` (see AllocateZone())
+  std::atomic<uint32_t> wal_zone_allocating_{0};
+
   std::atomic<long> active_io_zones_;
   std::atomic<long> open_io_zones_;
   std::condition_variable zone_resources_;
-  std::mutex zone_resources_mtx_; /* Protects active/open io zones */
 
   uint32_t max_nr_active_io_zones_;
   uint32_t max_nr_open_io_zones_;
+
+ public:
+  std::mutex zone_resources_mtx_; /* Protects active/open io zones */
 
  public:
   explicit ZonedBlockDevice(std::string bdevname,
@@ -110,7 +117,8 @@ class ZonedBlockDevice {
 
   Zone *GetIOZone(uint64_t offset);
 
-  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool wal_fast_path);
+  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal, uint64_t timeout_ns);
+  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
   Zone *AllocateMetaZone();
 
   uint64_t GetFreeSpace();
