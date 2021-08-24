@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "fs_zenfs.h"
 #include "rocksdb/env.h"
 #include "util/coding.h"
 #include "zbd_zenfs.h"
@@ -657,6 +658,174 @@ size_t ZoneFile::GetUniqueId(char* id, size_t max_size) {
 
 size_t ZonedRandomAccessFile::GetUniqueId(char* id, size_t max_size) const {
   return zoneFile_->GetUniqueId(id, max_size);
+}
+
+// This is a helper function to read data from a source zone from a read
+// position -> read_pos.
+IOStatus ZenFSGCWorker::ReadExtent(Slice* buf, uint64_t read_pos,
+                                   Zone* zone_src) {
+  int f = zbd_->GetReadFD();
+  const char* data = buf->data();
+  size_t read = 0;
+  size_t to_read = buf->size();
+  int ret;
+
+  if (read_pos >= zone_src->wp_) {
+    // EOF
+    buf->clear();
+    return IOStatus::OK();
+  }
+
+  if ((read_pos + to_read) > (zone_src->start_ + zone_src->max_capacity_)) {
+    return IOStatus::IOError("Read across zone");
+  }
+
+  while (read < to_read) {
+    ret = pread(f, (void*)(data + read), to_read - read, read_pos);
+
+    if (ret == -1 && errno == EINTR) continue;
+    if (ret < 0) return IOStatus::IOError("Read failed");
+
+    read += ret;
+    read_pos += ret;
+  }
+
+  return IOStatus::OK();
+}
+
+// This is a heavy weight function. There is going to be a high
+// traffic activity via the PCIe channel to the ZNS SSD because
+// of the read/write to zones which needs  to be issued. We need
+// some better ideas later to bring in efficiency, something like
+// "simple copy" or ideas in those lines.
+IOStatus ZenFSGCWorker::MoveValidDataToNewDestZone() {
+  std::vector<Zone*>::iterator zone_it;
+  std::vector<ZoneExtent*>::iterator ext_it;
+  std::vector<ZoneExtent*>::iterator e_it;
+  IOStatus s;
+  uint64_t r_pos;
+  uint32_t size;
+  uint32_t long_ext_size;
+  uint64_t new_start;
+  void* align_buf;
+  int dont_read = 0;
+
+  // Sort the Extent list in decreasing order.
+  std::sort(extent_list.begin(), extent_list.end(),
+            [](ZoneExtent* ext1, ZoneExtent* ext2) {
+              return ext1->length_ > ext2->length_;
+            });
+
+  // Get the size of the largest extent.
+  long_ext_size = extent_list[0]->length_;
+
+  // Allocate a aligned buffer with size of the largest extent.
+  // We have to issue pread from the source zones so we need a
+  // buffer.
+  int ret = posix_memalign(&align_buf, sysconf(_SC_PAGESIZE), long_ext_size);
+  if (ret) return IOStatus::IOError("Failed to allocate aligned memory");
+
+  zone_it = dst_zone_list.begin();
+  for (ext_it = extent_list.begin(); ext_it != extent_list.end();) {
+    ZoneExtent* ext;
+    Zone* zone_dst;
+
+    ext = *ext_it;
+    zone_dst = *zone_it;
+
+    // Set the position and length in the source zone to
+    // read the data.
+    r_pos = ext->start_;
+    size = ext->length_;
+    Slice buf((const char*)align_buf, size);
+
+    if (!dont_read) {
+      s = ReadExtent(&buf, r_pos, ext->zone_);
+      if (!s.ok()) {
+        free(align_buf);
+        return s;
+      }
+    }
+
+    // Store the new starting position for the extent
+    // which will be later made persistent.
+    new_start = zone_dst->wp_;
+
+    // Write the valid data where were read from the
+    // source zone to the destination zone.
+    s = zone_dst->Append((char*)align_buf, size);
+    if (s.ok()) {
+      // Data was written to the new zone, so the extent
+      // will have a new starting position. No need to
+      // change the length of the extent as it will be the
+      // same.
+      ext->start_ = new_start;
+
+      // The extent was moved to a new zone so change the
+      // resident zone parameter of the extent.
+      ext->zone_ = zone_dst;
+
+      // Current extent was written so now fetch the next extent.
+      ext_it++;
+      memset(align_buf, 0, long_ext_size);
+      dont_read = 0;
+      continue;
+    }
+
+    if (s == IOStatus::NoSpace()) {
+      // Data was already read before, no need to read it again
+      dont_read = 1;
+
+      // The current zone cannot fit this extent because of lack
+      // of space, so get the next zone from the dst_zone_list.
+      zone_it++;
+    }
+
+    // There was an error so cannot proceed and simply
+    // we return the status.
+    if (s == IOStatus::IOError()) {
+      // If memory was allocated, we free it before returning.
+      free(align_buf);
+
+      return s;
+    }
+  }
+
+  // Free the allocated buffer before returning OK status.
+  free(align_buf);
+
+  return IOStatus::OK();
+}
+
+IOStatus ZenFSGCWorker::UpdateMetadataAfterMerge() {
+  std::vector<ZoneFile*>::iterator zone_file_it;
+  IOStatus s;
+  for (zone_file_it = files_moved_to_dst_zone.begin();
+       zone_file_it != files_moved_to_dst_zone.end(); zone_file_it++) {
+    ZoneFile* file_moved;
+    file_moved = *zone_file_it;
+
+    // What if the file is deleted before coming here?
+    // We don't have to update the metadata if the file
+    // is deleted, because once deleted the metadata is
+    // already synced in the DeleteFile() function.
+    fs->files_mtx_.lock();
+    if (fs->files_.find(file_moved->filename_) == fs->files_.end()) {
+      // Should we erase this because this is
+      // already deleted ?
+      files_moved_to_dst_zone.erase(zone_file_it);
+      fs->files_mtx_.unlock();
+      continue;
+    }
+    fs->files_mtx_.unlock();
+
+    // TODO: Need to give a thought about Changlong's comment
+    // on how to trash/deal with old metadata after new changes.
+    s = fs->SyncFileMetadata(file_moved);
+    if (!s.ok()) return s;
+  }
+
+  return IOStatus::OK();
 }
 
 }  // namespace ROCKSDB_NAMESPACE

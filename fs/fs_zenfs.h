@@ -99,6 +99,7 @@ class ZenMetaLog {
 };
 
 class ZenFS : public FileSystemWrapper {
+  friend class ZenFSGCWorker;
   ZonedBlockDevice* zbd_;
   std::map<std::string, ZoneFile*> files_;
   std::mutex files_mtx_;
