@@ -19,12 +19,15 @@
 #include <unistd.h>
 #include <ctime>
 #include <iostream>
+#include <tuple>
+#include <map>
 
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+#include <set>
 
 #include "io_zenfs.h"
 #include "rocksdb/env.h"
@@ -47,6 +50,11 @@
 #define ZENFS_MIN_ZONES (32)
 
 namespace ROCKSDB_NAMESPACE {
+
+// zone_id: filename, create_time
+static std::map<uint64_t, std::vector<std::pair<std::string, std::string>>> opened_files;
+// filenames
+static std::set<std::string> opening_files;
 
 Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
     : zbd_(zbd),
@@ -88,6 +96,10 @@ void Zone::CloseWR() {
   }
 
   if (capacity_ == 0) zbd_->NotifyIOZoneFull();
+
+  // For debug, not locking required
+  auto zone_id = start_ >> 30;
+  opened_files.erase(zone_id);
 }
 
 IOStatus Zone::Reset() {
@@ -630,23 +642,41 @@ void ZonedBlockDevice::ResetUnusedIOZones() {
   }
 }
 
-// TODO(guokuankuan) Seperate WAL / General file allocation
-Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
-                                     bool is_wal) {
-  Zone *z = nullptr;
-  while (z == nullptr) {
-    z = AllocateZone(file_lifetime, is_wal, 100 * 1000 /* 100ms */);
+inline void PrintZoneFiles() {
+  AtomicWriter() << std::this_thread::get_id() << " Opening Files:\n";
+  {
+    AtomicWriter w;
+    w << "\t";
+    for(const auto& fname: opening_files) {
+      w << fname << ", ";
+    }
+    w << "\n";
   }
-  return z;
+
+  AtomicWriter() << std::this_thread::get_id() << " Opened Files:\n";
+  {
+    AtomicWriter w;
+    for(const auto& mp: opened_files) {
+      w << "\t" << mp.first << " : ";
+      for(const auto& pair: mp.second) {
+        w << " {" << pair.first << ", " << pair.second << "}, ";
+      }
+      w << "\n";
+    }
+    w << "\n";
+  }
 }
 
 Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
-                                     bool is_wal, uint64_t timeout_ns) {
+                                     bool is_wal, const std::string& fname) {
+  int reserved_zones = 2;
   Zone *allocated_zone = nullptr;
   Zone *finish_victim = nullptr;
   unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
   int new_zone = 0;
   Status s;
+
+  opening_files.emplace(fname);
 
   LatencyHistGuard guard(&io_alloc_latency_reporter_);
   io_alloc_qps_reporter_.AddCount(1);
@@ -665,9 +695,9 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
   /* Make sure we are below the zone open limit */
   {
     std::unique_lock<std::mutex> lk(zone_resources_mtx_);
-    zone_resources_.wait(lk, [this, is_wal] {
+    zone_resources_.wait(lk, [this, is_wal, reserved_zones] {
       if (!is_wal) {
-        return open_io_zones_.load() < max_nr_open_io_zones_ - 3;
+        return open_io_zones_.load() < max_nr_open_io_zones_ - reserved_zones;
       } else {
         return open_io_zones_.load() < max_nr_open_io_zones_;
       }
@@ -702,8 +732,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
       }
 
       std::unique_lock<std::mutex> lk(zone_resources_mtx_);
-      zone_resources_.wait(lk, [this] {
-        return open_io_zones_.load() < max_nr_open_io_zones_ - 3;
+      zone_resources_.wait(lk, [this, reserved_zones] {
+        return open_io_zones_.load() < max_nr_open_io_zones_ - reserved_zones;
       });
 
       wal_zones_mtx.lock();
@@ -872,6 +902,13 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
                  << " wal_alloc: " << wal_zone_allocating_.load()
                  << " reset_max: " << reset_max << " finish_max: " << finish_max
                  << "\n";
+
+  // for debug, we don't acquire lock here since there's almost not possible to have 
+  // multiple threads manipulate the same file,
+  // This may not be safe, but is enough for quick debug
+  opening_files.erase(fname);
+  opened_files[allocated_zone->start_ >> 30].emplace_back(fname, CurrentTime());
+  PrintZoneFiles();
 
   return allocated_zone;
 }
