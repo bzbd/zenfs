@@ -725,6 +725,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     }
   }
 
+  auto t2 = std::chrono::system_clock::now();
+
   // If we did not find a good match, allocate an empty one
   if (best_diff >= LIFETIME_DIFF_NOT_GOOD) {
     // TODO(guokuankuan) We should find a better way to sacrifice zone victim.
@@ -781,10 +783,13 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   open_zones_reporter_.AddRecord(open_io_zones_);
   active_zones_reporter_.AddRecord(active_io_zones_);
 
-  LineWriter() << CurrentTime() << " Tid = " << std::this_thread::get_id() << " is_wal = " << is_wal
-               << " active/open zones " << active_io_zones_.load() << "," << open_io_zones_.load()
-               << " lock wait: " << TimeDiff(t0, t1) << ", work time: " << TimeDiff(t1, t5)
-               << ", wal_alloc: " << wal_zone_allocating_.load() << "\n";
+  std::stringstream ss;
+  ss << CurrentTime() << " Tid = " << std::this_thread::get_id() << " is_wal = " << is_wal << " a/o zones "
+     << active_io_zones_.load() << "," << open_io_zones_.load() << " lock wait: " << TimeDiff(t0, t1)
+     << ", reset: " << TimeDiff(t1, t2) << ", other: " << TimeDiff(t2, t5)
+     << ", wal_alloc: " << wal_zone_allocating_.load() << "\n";
+
+  Info(logger_, "%s", ss.str().c_str());
 
   // For debug (guokuankuan)
   // we don't acquire lock here since there's almost not possible to have
