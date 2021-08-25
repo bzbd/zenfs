@@ -785,7 +785,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   LineWriter() << CurrentTime() << " Tid = " << std::this_thread::get_id() << " is_wal = " << is_wal
                << " active/open zones " << active_io_zones_.load() << "," << open_io_zones_.load()
-               << " lock wait: " << TimeDiff(t0, t1) << ", total time: " << TimeDiff(t1, t5)
+               << " lock wait: " << TimeDiff(t0, t1) << ", work time: " << TimeDiff(t1, t5)
                << ", wal_alloc: " << wal_zone_allocating_.load() << "\n";
 
   // For debug (guokuankuan)
