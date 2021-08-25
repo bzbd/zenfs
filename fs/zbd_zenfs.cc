@@ -85,7 +85,7 @@ void Zone::CloseWR() {
   open_for_write_ = false;
 
   // For debug, track all opened files
-  opened_files.erase(start_ >> 30);
+  // opened_files.erase(start_ >> 30);
   std::lock_guard<std::mutex> lock(zbd_->zone_resources_mtx_);
   if (Close().ok()) {
     zbd_->NotifyIOZoneClosed();
@@ -619,7 +619,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   // than 1
   // WAL files alive (which may happen in RocksDB/TerarkDB)
   int reserved_zones = 2;
-  opening_files.emplace(fname);
+  // opening_files.emplace(fname);
 
   LatencyHistGuard guard(&io_alloc_latency_reporter_);
   io_alloc_qps_reporter_.AddCount(1);
@@ -789,9 +789,9 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   // we don't acquire lock here since there's almost not possible to have
   // multiple threads manipulate the same file,
   // This is not thread safe, but is enough for quick debug
-  opening_files.erase(fname);
-  opened_files[allocated_zone->start_ >> 30].emplace_back(fname, CurrentTime());
-  PrintZoneFiles();
+  // opening_files.erase(fname);
+  // opened_files[allocated_zone->start_ >> 30].emplace_back(fname, CurrentTime());
+  // PrintZoneFiles();
 
   return allocated_zone;
 }
