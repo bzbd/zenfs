@@ -666,14 +666,18 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, const
 
   /* Make sure we are below the zone open limit */
   std::unique_lock<std::mutex> lk(zone_resources_mtx_);
-  zone_resources_.wait(lk, [this, wal_fast_path, &filename] {
-    if (!wal_fast_path) {
-      if (open_io_zones_.load() < max_nr_open_io_zones_ - 3) return true;
-    } else {
+  zone_resources_.wait(lk, [this, wal_fast_path, &filename, file_lifetime] {
+    if (wal_fast_path) {
+      // WAL
       if (open_io_zones_.load() < max_nr_open_io_zones_) return true;
+    } else if (file_lifetime == 3) {
+      // L0
+      if (open_io_zones_.load() < max_nr_open_io_zones_ - 2) return true;
+    } else {
+      if (open_io_zones_.load() < max_nr_open_io_zones_ - 4) return true;
     }
 
-    Info(logger_, "Waiting for lock: %s", filename.c_str());
+    Info(logger_, "Waiting for lock: %s L0?: %d WAL?: %d", filename.c_str(), file_lifetime == 3, wal_fast_path);
     return false;
   });
 
