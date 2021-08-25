@@ -82,16 +82,17 @@ uint64_t Zone::GetZoneNr() { return start_ / zbd_->GetZoneSize(); }
 void Zone::CloseWR() {
   assert(open_for_write_);
   Sync();
-  open_for_write_ = false;
 
   // For debug, track all opened files
-  // opened_files.erase(start_ >> 30);
+  opened_files.erase(start_ >> 30);
   std::lock_guard<std::mutex> lock(zbd_->zone_resources_mtx_);
   if (Close().ok()) {
+    assert(!open_for_write_);
     zbd_->NotifyIOZoneClosed();
   }
 
   if (capacity_ == 0) zbd_->NotifyIOZoneFull();
+
 }
 
 IOStatus Zone::Reset() {
@@ -141,12 +142,14 @@ IOStatus Zone::Close() {
   int fd = zbd_->GetWriteFD();
   int ret;
 
-  assert(!open_for_write_);
+  assert(open_for_write_);
 
   if (!(IsEmpty() || IsFull())) {
     ret = zbd_close_zones(fd, start_, zone_sz);
     if (ret) return IOStatus::IOError("Zone close failed\n");
   }
+
+	open_for_write_ = false;
 
   return IOStatus::OK();
 }
