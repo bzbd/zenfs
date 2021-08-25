@@ -19,15 +19,15 @@
 #include <unistd.h>
 #include <ctime>
 #include <iostream>
-#include <tuple>
 #include <map>
+#include <tuple>
 
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
-#include <set>
 
 #include "io_zenfs.h"
 #include "rocksdb/env.h"
@@ -50,11 +50,6 @@
 #define ZENFS_MIN_ZONES (32)
 
 namespace ROCKSDB_NAMESPACE {
-
-// zone_id: filename, create_time
-static std::map<uint64_t, std::vector<std::pair<std::string, std::string>>> opened_files;
-// filenames
-static std::set<std::string> opening_files;
 
 Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
     : zbd_(zbd),
@@ -89,6 +84,9 @@ void Zone::CloseWR() {
   Sync();
   open_for_write_ = false;
 
+  // For debug
+  opened_files.erase(start_ >> 30);
+
   std::lock_guard<std::mutex> lock(zbd_->zone_resources_mtx_);
 
   if (Close().ok()) {
@@ -96,10 +94,6 @@ void Zone::CloseWR() {
   }
 
   if (capacity_ == 0) zbd_->NotifyIOZoneFull();
-
-  // For debug, not locking required
-  auto zone_id = start_ >> 30;
-  opened_files.erase(zone_id);
 }
 
 IOStatus Zone::Reset() {
@@ -139,8 +133,8 @@ IOStatus Zone::Finish() {
   ret = zbd_finish_zones(fd, start_, zone_sz);
   if (ret) return IOStatus::IOError("Zone finish failed\n");
 
-  AtomicWriter() << std::this_thread::get_id()
-                 << " Finish() Capacity: " << capacity_ << "\n";
+  LineWriter() << std::this_thread::get_id()
+               << " Finish() Capacity: " << capacity_ << "\n";
   capacity_ = 0;
   wp_ = start_ + zone_sz;
 
@@ -642,40 +636,18 @@ void ZonedBlockDevice::ResetUnusedIOZones() {
   }
 }
 
-inline void PrintZoneFiles() {
-  AtomicWriter() << std::this_thread::get_id() << " Opening Files:\n";
-  {
-    AtomicWriter w;
-    w << "\t";
-    for(const auto& fname: opening_files) {
-      w << fname << ", ";
-    }
-    w << "\n";
-  }
-
-  AtomicWriter() << std::this_thread::get_id() << " Opened Files:\n";
-  {
-    AtomicWriter w;
-    for(const auto& mp: opened_files) {
-      w << "\t" << mp.first << " : ";
-      for(const auto& pair: mp.second) {
-        w << " {" << pair.first << ", " << pair.second << "}, ";
-      }
-      w << "\n";
-    }
-    w << "\n";
-  }
-}
-
 Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
-                                     bool is_wal, const std::string& fname) {
-  int reserved_zones = 2;
+                                     bool is_wal, const std::string &fname) {
   Zone *allocated_zone = nullptr;
   Zone *finish_victim = nullptr;
   unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
   int new_zone = 0;
   Status s;
 
+  // We will always reserve a few zones for WAL files in case there are more
+  // than 1
+  // WAL files alive (which may happen in RocksDB/TerarkDB)
+  int reserved_zones = 2;
   opening_files.emplace(fname);
 
   LatencyHistGuard guard(&io_alloc_latency_reporter_);
@@ -684,10 +656,9 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
   auto t0 = std::chrono::system_clock::now();
 
   // For general data, we need both two locks, so the general data thread
-  // can give up CPU to WAL thread.
+  // can give up lock to WAL thread.
   if (!is_wal) {
     io_zones_mtx.lock();
-    AtomicWriter() << std::this_thread::get_id() << " io_zones_mtx.lock()\n";
   } else {
     wal_zone_allocating_++;
   }
@@ -705,43 +676,35 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
     });
   }
 
+  // For general files, it needs both io mutex & wal mutex.
   wal_zones_mtx.lock();
-  AtomicWriter() << std::this_thread::get_id() << " wal_zones_mtx.lock()\n";
   if (is_wal) wal_zone_allocating_--;
 
   LatencyHistGuard guard_actual(&io_alloc_actual_latency_reporter_);
 
-  uint64_t reset_max = 0;
-  uint64_t finish_max = 0;
   auto t1 = std::chrono::system_clock::now();
-
-  AtomicWriter() << std::this_thread::get_id()
-                 << " \tacquire lock: " << TimeDiff(t0, t1) << "\n";
 
   /* Reset any unused zones and finish used zones under capacity treshold*/
   for (int i = 0; i < io_zones.size(); i++) {
-    // unlock wal mutex and give wal thread a chance
+    // Unlock wal mutex and give wal thread a chance
     if (!is_wal && wal_zone_allocating_.load() > 0) {
       wal_zones_mtx.unlock();
-      AtomicWriter() << std::this_thread::get_id() << " " << i
-                     << " wal_zones_mtx.unlock()"
-                     << "\n";
       while (wal_zone_allocating_.load() > 0) {
         std::this_thread::yield();
+        // After we get back, we will re-start the loop in case other thread
+        // changes the state of any zone, may need fine grained tuning.
         i = 0;
       }
 
+      // Re-acquire resource mutex under target condition
       std::unique_lock<std::mutex> lk(zone_resources_mtx_);
       zone_resources_.wait(lk, [this, reserved_zones] {
         return open_io_zones_.load() < max_nr_open_io_zones_ - reserved_zones;
       });
 
       wal_zones_mtx.lock();
-      AtomicWriter() << std::this_thread::get_id() << " " << i
-                     << " wal_zones_mtx.lock()\n";
     }
     const auto z = io_zones[i];
-
     if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
       continue;
 
@@ -749,12 +712,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
     // For most cases, reset takes not too much time
     if (!z->IsUsed()) {
       if (!z->IsFull()) active_io_zones_--;
-      auto a = std::chrono::system_clock::now();
       s = z->Reset();
-      auto b = std::chrono::system_clock::now();
-      auto diff =
-          std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
-      if (diff > reset_max) reset_max = diff;
 
       if (!s.ok()) {
         Warn(logger_, "Failed resetting zone !");
@@ -770,12 +728,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
         (z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
       /* If there is less than finish_threshold_% remaining capacity in a
        * non-open-zone, finish the zone */
-      auto a = std::chrono::system_clock::now();
       s = z->Finish();
-      auto b = std::chrono::system_clock::now();
-      auto diff =
-          std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
-      if (diff > finish_max) finish_max = diff;
       if (!s.ok()) {
         Warn(logger_, "Failed finishing zone");
       }
@@ -792,10 +745,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
     }
   }
 
-  auto t2 = std::chrono::system_clock::now();
-  AtomicWriter() << std::this_thread::get_id()
-                 << " \tfor loop: " << TimeDiff(t1, t2) << "\n";
-
   /* Try to fill an already open zone(with the best life time diff) */
   for (const auto z : io_zones) {
     if ((!z->open_for_write_) && (z->used_capacity_ > 0) && !z->IsFull()) {
@@ -807,24 +756,14 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
     }
   }
 
-  auto t3 = std::chrono::system_clock::now();
-  AtomicWriter() << std::this_thread::get_id()
-                 << " \tfor lifetime loop: " << TimeDiff(t2, t3) << "\n";
-
   // If we did not find a good match, allocate an empty one
-  // Always allocate new zone for wal files
   if (best_diff >= LIFETIME_DIFF_NOT_GOOD) {
+    // TODO(guokuankuan) We should find a better way to sacrifice zone victim.
     /* If we at the active io zone limit, finish an open zone(if available) with
      * least capacity left
     if (active_io_zones_.load() == max_nr_active_io_zones_ &&
         finish_victim != nullptr) {
-      auto a = std::chrono::system_clock::now();
       s = finish_victim->Finish();
-      auto b = std::chrono::system_clock::now();
-      auto us =
-    std::chrono::duration_cast<std::chrono::microseconds>(b-a).count();
-      std::cerr << "Finish victim, is_wal = " << is_wal  << ", cost(us) = " <<
-    us << std::endl;
       if (!s.ok()) {
         Warn(logger_, "Failed finishing zone");
       }
@@ -846,15 +785,12 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
           break;
         }
       }
-    } else {
-      // Warn(logger_,
-      //     "could not find a good match, but no zone could be finished\n");
     }
+    // else {
+    // Warn(logger_,
+    //     "could not find a good match, but no zone could be finished\n");
+    //}
   }
-
-  auto t4 = std::chrono::system_clock::now();
-  AtomicWriter() << std::this_thread::get_id()
-                 << " \tbest diff: " << TimeDiff(t3, t4) << "\n";
 
   if (allocated_zone) {
     assert(!allocated_zone->open_for_write_);
@@ -867,45 +803,28 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,
   }
 
   wal_zones_mtx.unlock();
-  AtomicWriter() << std::this_thread::get_id() << " wal_zones_mtx.unlock()"
-                 << "\n";
   if (!is_wal) {
     io_zones_mtx.unlock();
-    AtomicWriter() << std::this_thread::get_id() << " io_zones_mtx.unlock()"
-                   << "\n";
+    // TODO(guokuankuan) Do we really need to print zone stats here?
     LogZoneStats();
   }
 
   auto t5 = std::chrono::system_clock::now();
-  AtomicWriter() << std::this_thread::get_id()
-                 << " \tlog stats, unlock: " << TimeDiff(t4, t5) << "\n";
 
   open_zones_reporter_.AddRecord(open_io_zones_);
   active_zones_reporter_.AddRecord(active_io_zones_);
 
-  auto loop0 =
-      std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-  auto loop1 =
-      std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
-  auto loop2 =
-      std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
-  auto loop3 =
-      std::chrono::duration_cast<std::chrono::microseconds>(t4 - t3).count();
-  auto loop4 =
-      std::chrono::duration_cast<std::chrono::microseconds>(t5 - t4).count();
+  LineWriter() << CurrentTime() << " Tid = " << std::this_thread::get_id()
+               << " is_wal = " << is_wal << " active/open zones "
+               << active_io_zones_.load() << "," << open_io_zones_.load()
+               << " lock wait: " << TimeDiff(t0, t1)
+               << ", total time: " << TimeDiff(t1, t5)
+               << ", wal_alloc: " << wal_zone_allocating_.load() << "\n";
 
-  AtomicWriter() << CurrentTime() << " Tid = " << std::this_thread::get_id()
-                 << " is_wal = " << is_wal << " active/open zones "
-                 << active_io_zones_.load() << "," << open_io_zones_.load()
-                 << " lock wait:" << loop0 << ", loops(us):" << loop1 << ","
-                 << loop2 << "," << loop3 << "," << loop4
-                 << " wal_alloc: " << wal_zone_allocating_.load()
-                 << " reset_max: " << reset_max << " finish_max: " << finish_max
-                 << "\n";
-
-  // for debug, we don't acquire lock here since there's almost not possible to have 
+  // For debug (guokuankuan)
+  // we don't acquire lock here since there's almost not possible to have
   // multiple threads manipulate the same file,
-  // This may not be safe, but is enough for quick debug
+  // This is not thread safe, but is enough for quick debug
   opening_files.erase(fname);
   opened_files[allocated_zone->start_ >> 30].emplace_back(fname, CurrentTime());
   PrintZoneFiles();
