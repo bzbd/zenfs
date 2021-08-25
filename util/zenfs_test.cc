@@ -30,8 +30,8 @@ ZonedBlockDevice *zbd_open(bool readonly, std::shared_ptr<Logger> logger) {
   IOStatus open_status = zbd->Open(readonly);
 
   if (!open_status.ok()) {
-    fprintf(stderr, "Failed to open zoned block device: %s, error: %s\n",
-            FLAGS_zbd.c_str(), open_status.ToString().c_str());
+    fprintf(stderr, "Failed to open zoned block device: %s, error: %s\n", FLAGS_zbd.c_str(),
+            open_status.ToString().c_str());
     delete zbd;
     return nullptr;
   }
@@ -39,8 +39,7 @@ ZonedBlockDevice *zbd_open(bool readonly, std::shared_ptr<Logger> logger) {
   return zbd;
 }
 
-Status zenfs_mount(ZonedBlockDevice *zbd, ZenFS **zenFS, bool readonly,
-                   std::shared_ptr<Logger> logger) {
+Status zenfs_mount(ZonedBlockDevice *zbd, ZenFS **zenFS, bool readonly, std::shared_ptr<Logger> logger) {
   Status s;
 
   *zenFS = new ZenFS(zbd, FileSystem::Default(), logger);
@@ -83,8 +82,7 @@ int test() {
   ZenFS *zenFS;
   s = zenfs_mount(zbd, &zenFS, false, logger);
   if (!s.ok()) {
-    fprintf(stderr, "Failed to mount filesystem, error: %s\n",
-            s.ToString().c_str());
+    fprintf(stderr, "Failed to mount filesystem, error: %s\n", s.ToString().c_str());
     return 1;
   }
 
@@ -97,11 +95,12 @@ int test() {
     int file_id;
   };
 
-  typedef boost::fibers::buffered_channel<TaskInfo> channel_t;
+  char buffer[1048576] = {0};
+  Slice slice(buffer, 1048576);
 
-  auto task = [zenFS, &counter, &random_device](int i) {
+  auto task = [zenFS, &counter, &random_device, slice](int i) {
     std::default_random_engine e1(random_device());
-    std::uniform_int_distribution<int> uniform_dist(3000, 5000);
+    std::uniform_int_distribution<int> uniform_dist(300, 500);
 
     for (int g = 0; g < 10000; g++) {
       auto file_id = counter.fetch_add(1, std::memory_order_relaxed);
@@ -110,79 +109,45 @@ int test() {
       IOOptions iopts;
       IODebugContext dbg;
 
-      sprintf(f, "zenfs_test/test_file_%d.sst", file_id);
+      sprintf(f, "zenfs_test/test_file_%d.log", file_id);
 
       {
         FileOptions fopts;
         std::unique_ptr<FSWritableFile> f_file;
         s = zenFS->NewWritableFile(f, fopts, &f_file, &dbg);
         if (!s.ok()) {
-          std::cerr << "[#" << file_id
-                    << "] failed to create new file: " << s.ToString()
-                    << std::endl;
+          std::cerr << "[#" << file_id << "] failed to create new file: " << s.ToString() << std::endl;
         }
         std::cerr << "+" << f << std::endl;
-        char test_data[4096] = {0};
-        Slice data(test_data, 4096);
         auto file_size = uniform_dist(e1);
 
         std::vector<std::thread> writer_threads;
-        channel_t chan(128);
-
-        for (int i = 0; i < 3; i++) {
-          writer_threads.emplace_back(std::thread([&chan]() {
-            IOStatus s;
-            IOOptions iopts;
-            IODebugContext dbg;
-            TaskInfo info;
-            char test_data[4096] = {0};
-            while (boost::fibers::channel_op_status::success ==
-                   chan.pop(info)) {
-              s = info.file->Append(test_data, iopts, &dbg);
-              if (!s.ok()) {
-                std::cerr << "[#" << info.file_id
-                          << "] failed to append: " << s.ToString()
-                          << std::endl;
-              }
-              s = info.file->Sync(iopts, &dbg);
-              if (!s.ok()) {
-                std::cerr << "[#" << info.file_id
-                          << "] failed to sync: " << s.ToString() << std::endl;
-              }
-            }
-          }));
-        }
 
         for (int t = 0; t < file_size; t++) {
-          TaskInfo info;
-          info.file = f_file.get();
-          info.file_id = file_id;
-          chan.push(info);
-        }
-        chan.close();
-        for (auto &&thread : writer_threads) {
-          thread.join();
+          IOStatus s;
+          IOOptions iopts;
+          IODebugContext dbg;
+          s = f_file->Append(slice, iopts, &dbg);
+          if (!s.ok()) {
+            std::cerr << "[#" << file_id << "] failed to append: " << s.ToString() << std::endl;
+          }
+          s = f_file->Sync(iopts, &dbg);
+          if (!s.ok()) {
+            std::cerr << "[#" << file_id << "] failed to sync: " << s.ToString() << std::endl;
+          }
         }
       }
 
-      s = zenFS->DeleteFile(f, iopts, &dbg);
-      if (!s.ok()) {
-        std::cerr << "[#" << file_id << "] failed to delete: " << s.ToString()
-                  << std::endl;
-      }
+      // s = zenFS->DeleteFile(f, iopts, &dbg);
+      // if (!s.ok()) {
+      //   std::cerr << "[#" << file_id << "] failed to delete: " <<
+      //   s.ToString()
+      //             << std::endl;
+      // }
 
-      std::cerr << "-" << f << std::endl;
+      // std::cerr << "-" << f << std::endl;
     }
   };
-
-  auto stat_thread = std::thread([&zenFS]() {
-    std::vector<ZoneStat> stat;
-    while (true) {
-      stat = zenFS->GetStat();
-      std::cerr << "GetStat" << std::endl;
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-  });
 
   for (int i = 0; i < 40; i++) {
     thread_handlers.emplace_back(std::thread(task, i));
@@ -192,8 +157,6 @@ int test() {
     thread.join();
   }
 
-  stat_thread.join();
-
   delete zenFS;
   return 0;
 }
@@ -202,7 +165,8 @@ int test() {
 
 int main(int argc, char **argv) {
   gflags::SetUsageMessage(std::string("\nUSAGE:\n") + std::string(argv[0]) +
-                  +" <command> [OPTIONS]...\nCommands: mkfs, list, ls-uuid, df, backup, restore");
+                          +" <command> [OPTIONS]...\nCommands: mkfs, list, "
+                           "ls-uuid, df, backup, restore");
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
