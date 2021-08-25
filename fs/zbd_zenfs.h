@@ -42,6 +42,10 @@ struct zenfs_aio_ctx {
   int fd;
 };
 
+enum ZoneState {
+  ZONE_UNKNOWN, ZONE_EMPTY, ZONE_IN_USE, ZONE_IDLE, ZONE_FULL
+};
+
 class Zone {
   ZonedBlockDevice *zbd_;
 
@@ -55,6 +59,7 @@ class Zone {
   bool open_for_write_;
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<long> used_capacity_;
+  ZoneState state_;
   struct zenfs_aio_ctx wr_ctx;
 
   IOStatus Reset();
@@ -171,6 +176,8 @@ class ZonedBlockDevice {
   void NotifyIOZoneClosed();
 
   std::vector<ZoneStat> GetStat();
+
+  void InitializeZoneState();
 
   std::shared_ptr<MetricsReporterFactory> metrics_reporter_factory_;
   std::string bytedance_tags_;

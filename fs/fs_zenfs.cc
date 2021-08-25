@@ -981,6 +981,8 @@ Status ZenFS::Mount(bool readonly) {
     Info(logger_, "  Done");
   }
 
+  zbd_->InitializeZoneState();
+
   LogFiles();
 
   return Status::OK();

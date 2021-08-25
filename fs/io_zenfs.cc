@@ -214,11 +214,11 @@ ZoneFile::~ZoneFile() {
 
 void ZoneFile::CloseWR() {
   if (active_zone_) {
-    Info(logger_, "Closing %s\n", filename_.c_str());
+    Warn(logger_, "Closing %s\n", filename_.c_str());
     active_zone_->CloseWR();
     active_zone_ = NULL;
   } else {
-    Info(logger_, "Active zone = nullptr, %s\n", filename_.c_str());
+    Warn(logger_, "Active zone = nullptr, %s\n", filename_.c_str());
   }
   open_for_wr_ = false;
 }

@@ -50,7 +50,8 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
       start_(zbd_zone_start(z)),
       max_capacity_(zbd_zone_capacity(z)),
       wp_(zbd_zone_wp(z)),
-      open_for_write_(false) {
+      open_for_write_(false),
+      state_(ZONE_UNKNOWN) {
   lifetime_ = Env::WLTH_NOT_SET;
   used_capacity_ = 0;
   capacity_ = 0;
@@ -81,10 +82,12 @@ void Zone::CloseWR() {
   const std::lock_guard<std::mutex> lk(zbd_->zone_resources_mtx_);
 
   if (Close().ok()) {
+    state_ = ZONE_IDLE;
     zbd_->NotifyIOZoneClosed();
   }
 
   if (capacity_ == 0) {
+    state_ = ZONE_FULL;
     zbd_->NotifyIOZoneFull();
   }
 
@@ -490,12 +493,12 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
 
 void ZonedBlockDevice::NotifyIOZoneFull() {
   active_io_zones_--;
-  zone_resources_.notify_one();
+  zone_resources_.notify_all();
 }
 
 void ZonedBlockDevice::NotifyIOZoneClosed() {
   open_io_zones_--;
-  zone_resources_.notify_one();
+  zone_resources_.notify_all();
 }
 
 uint64_t ZonedBlockDevice::GetFreeSpace() {
@@ -628,6 +631,18 @@ Zone *ZonedBlockDevice::AllocateMetaZone() {
   return nullptr;
 }
 
+void ZonedBlockDevice::InitializeZoneState() {
+  for (auto zone : io_zones) {
+    if (zone->IsEmpty()) {
+      zone->state_ = ZONE_EMPTY;
+    } else if (zone->IsFull()) {
+      zone->state_ = ZONE_FULL;
+    } else {
+      zone->state_ = ZONE_IDLE;
+    }
+  }
+}
+
 void ZonedBlockDevice::ResetUnusedIOZones() {
   const std::lock_guard<std::mutex> lock(zone_resources_mtx_);
   /* Reset any unused zones */
@@ -649,80 +664,69 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, const
   LatencyHistGuard guard(&io_alloc_latency_reporter_);
   io_alloc_qps_reporter_.AddCount(1);
 
-  io_zones_mtx.lock();
-
   /* Make sure we are below the zone open limit */
-  {
-    std::unique_lock<std::mutex> lk(zone_resources_mtx_);
-    zone_resources_.wait(lk, [this] {
+  std::unique_lock<std::mutex> lk(zone_resources_mtx_);
+  zone_resources_.wait(lk, [this, wal_fast_path, &filename] {
+    if (!wal_fast_path) {
+      if (open_io_zones_.load() < max_nr_open_io_zones_ - 3) return true;
+    } else {
       if (open_io_zones_.load() < max_nr_open_io_zones_) return true;
-      return false;
-    });
-  }
+    }
+
+    Info(logger_, "Waiting for lock: %s", filename.c_str());
+    return false;
+  });
+
+  io_zones_mtx.lock();
 
   LatencyHistGuard guard_actual(&io_alloc_actual_latency_reporter_);
 
+  int reset_cnt = wal_fast_path ? 0 : 3;
+
   /* Reset any unused zones and finish used zones under capacity treshold*/
   for (const auto z : io_zones) {
-    if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
-      continue;
-
-    if (!z->IsUsed()) {
-      if (!z->IsFull()) active_io_zones_--;
+    if (reset_cnt <= 0) {
+      break;
+    }
+    if (z->state_ == ZONE_FULL && z->used_capacity_ == 0) {
+      z->state_ = ZONE_EMPTY;
       s = z->Reset();
       if (!s.ok()) {
         Warn(logger_, "Failed resetting zone !");
       }
+      reset_cnt -= 1;
       continue;
-    }
-
-    if ((z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
-      /* If there is less than finish_threshold_% remaining capacity in a
-       * non-open-zone, finish the zone */
-      s = z->Finish();
-      if (!s.ok()) {
-        Warn(logger_, "Failed finishing zone");
-      }
-      active_io_zones_--;
-    }
-
-    if (!z->IsFull()) {
-      if (finish_victim == nullptr) {
-        finish_victim = z;
-      } else if (finish_victim->capacity_ > z->capacity_) {
-        finish_victim = z;
-      }
     }
   }
 
   /* Try to fill an already open zone(with the best life time diff) */
+  int real_open_io_zones = 0;
+  int real_idle_zones = 0;
   for (const auto z : io_zones) {
-    if ((!z->open_for_write_) && (z->used_capacity_ > 0) && !z->IsFull()) {
+    if (z->state_ == ZONE_IDLE) {
       unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
       if (diff <= best_diff) {
         allocated_zone = z;
         best_diff = diff;
       }
+      real_idle_zones += 1;
     }
+
+    if (z->state_ == ZONE_IN_USE) {
+      real_open_io_zones++;
+    }
+  }
+
+  if (real_open_io_zones != open_io_zones_ || real_idle_zones + real_open_io_zones != active_io_zones_) {
+    std::cerr << std::dec << "Open Zone: " << real_open_io_zones << "!=" << open_io_zones_ << "(stat)" << std::endl;
+    std::cerr << "Active Zone: " << real_idle_zones + real_open_io_zones << "!=" << active_io_zones_ << "(stat)" << std::endl;
   }
 
   /* If we did not find a good match, allocate an empty one */
   if (best_diff >= LIFETIME_DIFF_NOT_GOOD) {
-    /* If we at the active io zone limit, finish an open zone(if available) with
-     * least capacity left */
-    if (active_io_zones_.load() == max_nr_active_io_zones_ &&
-        finish_victim != nullptr) {
-      s = finish_victim->Finish();
-      if (!s.ok()) {
-        Warn(logger_, "Failed finishing zone");
-      }
-      active_io_zones_--;
-      Warn(logger_, "active zone limit reached, and <start: 0x%lx> is forced to finish\n", finish_victim->start_);
-    }
-
     if (active_io_zones_.load() < max_nr_active_io_zones_) {
       for (const auto z : io_zones) {
-        if ((!z->open_for_write_) && z->IsEmpty()) {
+        if (z->state_ == ZONE_EMPTY) {
           z->lifetime_ = file_lifetime;
           allocated_zone = z;
           active_io_zones_++;
@@ -739,6 +743,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, const
     assert(!allocated_zone->open_for_write_);
     allocated_zone->open_for_write_ = true;
     open_io_zones_++;
+    allocated_zone->state_ = ZONE_IN_USE;
     Debug(logger_,
           "Allocating zone(new=%d) start: 0x%lx wp: 0x%lx lt: %d file lt: %d\n",
           new_zone, allocated_zone->start_, allocated_zone->wp_,
@@ -752,8 +757,15 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, const
 
   io_zones_mtx.unlock();
 
+  // In case there are more open zones
+  zone_resources_.notify_all();
+  lk.unlock();
+
   open_zones_reporter_.AddRecord(open_io_zones_);
   active_zones_reporter_.AddRecord(active_io_zones_);
+  if (active_io_zones_ < 0) {
+    std::cerr << "active zone -> negative!" << std::endl;
+  }
 
   return allocated_zone;
 }
