@@ -214,8 +214,11 @@ ZoneFile::~ZoneFile() {
 
 void ZoneFile::CloseWR() {
   if (active_zone_) {
+    Info(logger_, "Closing %s\n", filename_.c_str());
     active_zone_->CloseWR();
     active_zone_ = NULL;
+  } else {
+    Info(logger_, "Active zone = nullptr, %s\n", filename_.c_str());
   }
   open_for_wr_ = false;
 }
@@ -348,7 +351,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, bool async)
   IOStatus s;
 
   if (active_zone_ == NULL) {
-    active_zone_ = zbd_->AllocateZone(lifetime_, is_wal_);
+    active_zone_ = zbd_->AllocateZone(lifetime_, filename_, is_wal_);
     if (!active_zone_) {
       Warn(logger_, "Zone allocation failure upon append starting, filename=%s, lifetime=%d\n", filename_.c_str(), lifetime_);
       return IOStatus::NoSpace("Zone allocation failure\n");
@@ -362,7 +365,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, bool async)
       PushExtent();
 
       active_zone_->CloseWR();
-      active_zone_ = zbd_->AllocateZone(lifetime_, is_wal_);
+      active_zone_ = zbd_->AllocateZone(lifetime_, filename_,  is_wal_);
       if (!active_zone_) {
         Warn(logger_, "Zone allocation failure when appending, filename=%s, left=%d\n", filename_.c_str(), left);
         return IOStatus::NoSpace("Zone allocation failure\n");
@@ -399,6 +402,7 @@ IOStatus ZoneFile::SetWriteLifeTimeHint(Env::WriteLifeTimeHint lifetime) {
 ZonedWritableFile::ZonedWritableFile(ZonedBlockDevice* zbd, bool _buffered,
                                      ZoneFile* zoneFile,
                                      MetadataWriter* metadata_writer) {
+  Info(zoneFile->logger_, "ZonedWritableFile Open: %s\n", zoneFile->GetFilename().c_str());
   wp = zoneFile->GetFileSize();
   assert(wp == 0);
 
@@ -438,6 +442,7 @@ IOStatus ZoneFile::Sync() {
 }
 
 ZonedWritableFile::~ZonedWritableFile() {
+  Info(zoneFile_->logger_, "ZonedWritableFile Close: %s\n", zoneFile_->GetFilename().c_str());
   zoneFile_->CloseWR();
   if (buffered) {
     free(b1);
@@ -493,7 +498,9 @@ IOStatus ZonedWritableFile::RangeSync(uint64_t offset, uint64_t nbytes,
 
 IOStatus ZonedWritableFile::Close(const IOOptions& options,
                                   IODebugContext* dbg) {
+  Info(zoneFile_->logger_, "ZonedWritableFile Manual Close: %s\n", zoneFile_->GetFilename().c_str());
   Fsync(options, dbg);
+  Info(zoneFile_->logger_, "ZonedWritableFile After fsync: %s\n", zoneFile_->GetFilename().c_str());
   zoneFile_->CloseWR();
 
   return IOStatus::OK();

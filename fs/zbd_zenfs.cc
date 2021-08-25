@@ -19,6 +19,8 @@
 #include <unistd.h>
 
 #include <fstream>
+#include <chrono>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -76,13 +78,21 @@ void Zone::CloseWR() {
   Sync();
   open_for_write_ = false;
 
-  const std::lock_guard<std::mutex> lock(zbd_->zone_resources_mtx_);
+  const std::lock_guard<std::mutex> lk(zbd_->zone_resources_mtx_);
 
   if (Close().ok()) {
     zbd_->NotifyIOZoneClosed();
   }
 
-  if (capacity_ == 0) zbd_->NotifyIOZoneFull();
+  if (capacity_ == 0) {
+    zbd_->NotifyIOZoneFull();
+  }
+
+  auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds> (std::chrono::system_clock::now() - zbd_->opened_at[start_ >> 30]).count();
+  Info(zbd_->logger_, "%s opened for %ld ns", zbd_->opened_files[start_ >> 30].c_str(), elapsed);
+  zbd_->opened_files.erase(start_ >> 30);
+
+  zbd_->LogZoneStatsInternal();
 }
 
 IOStatus Zone::Reset() {
@@ -543,6 +553,12 @@ void ZonedBlockDevice::LogZoneStatsInternal() {
        time(NULL) - start_time_, used_capacity / MB, reclaimable_capacity / MB,
        100 * reclaimable_capacity / reclaimables_max_capacity, active,
        active_io_zones_.load(), open_io_zones_.load());
+  for (const auto& x : opened_files) {
+    auto opened_time = opened_at[x.first];
+    time_t tt = std::chrono::system_clock::to_time_t(opened_time);
+    tm local_tm = *localtime(&tt);
+    Info(logger_, "Zone %d: %s opened at %02d:%02d:%02d\n", x.first, x.second.c_str(), local_tm.tm_hour, local_tm.tm_min, local_tm.tm_sec);
+  }
 }
 
 void ZonedBlockDevice::LogZoneUsage() {
@@ -623,7 +639,7 @@ void ZonedBlockDevice::ResetUnusedIOZones() {
   }
 }
 
-Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool wal_fast_path) {
+Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, const std::string &filename, bool wal_fast_path) {
   Zone *allocated_zone = nullptr;
   Zone *finish_victim = nullptr;
   unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
@@ -727,9 +743,13 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
           "Allocating zone(new=%d) start: 0x%lx wp: 0x%lx lt: %d file lt: %d\n",
           new_zone, allocated_zone->start_, allocated_zone->wp_,
           allocated_zone->lifetime_, file_lifetime);
+
+    opened_files[allocated_zone->start_ >> 30] = filename;
+    opened_at[allocated_zone->start_ >> 30] = std::chrono::system_clock::now();
   }
 
   LogZoneStatsInternal();
+
   io_zones_mtx.unlock();
 
   open_zones_reporter_.AddRecord(open_io_zones_);

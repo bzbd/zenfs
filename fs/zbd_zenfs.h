@@ -22,6 +22,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <map>
+#include <chrono>
 
 #include "rocksdb/env.h"
 #include "rocksdb/io_status.h"
@@ -84,7 +86,6 @@ class ZonedBlockDevice {
   int read_direct_f_;
   int write_f_;
   time_t start_time_;
-  std::shared_ptr<Logger> logger_;
   uint32_t finish_threshold_ = 0;
 
   std::atomic<long> active_io_zones_;
@@ -95,6 +96,10 @@ class ZonedBlockDevice {
   uint32_t max_nr_open_io_zones_;
 
  public:
+  std::shared_ptr<Logger> logger_;
+  std::map<int, std::string> opened_files;
+  std::map<int, std::chrono::time_point<std::chrono::system_clock>> opened_at;
+
   explicit ZonedBlockDevice(std::string bdevname,
                             std::shared_ptr<Logger> logger);
   explicit ZonedBlockDevice(
@@ -109,7 +114,7 @@ class ZonedBlockDevice {
 
   Zone *GetIOZone(uint64_t offset);
 
-  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool wal_fast_path);
+  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, const std::string &filename, bool wal_fast_path);
   Zone *AllocateMetaZone();
 
   uint64_t GetFreeSpace();
@@ -159,7 +164,10 @@ class ZonedBlockDevice {
     }
   }
 
+  // must hold `zone_resources_mtx_`
   void NotifyIOZoneFull();
+
+  // must hold `zone_resources_mtx_`
   void NotifyIOZoneClosed();
 
   std::vector<ZoneStat> GetStat();
