@@ -92,7 +92,6 @@ void Zone::CloseWR() {
   }
 
   if (capacity_ == 0) zbd_->NotifyIOZoneFull();
-
 }
 
 IOStatus Zone::Reset() {
@@ -149,7 +148,7 @@ IOStatus Zone::Close() {
     if (ret) return IOStatus::IOError("Zone close failed\n");
   }
 
-	open_for_write_ = false;
+  open_for_write_ = false;
 
   return IOStatus::OK();
 }
@@ -618,10 +617,9 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   int new_zone = 0;
   Status s;
 
-  // We will always reserve a few zones for WAL files in case there are more
-  // than 1
-  // WAL files alive (which may happen in RocksDB/TerarkDB)
-  int reserved_zones = 2;
+  // We shall reserve one more free zone for WAL files.
+  // TODO(guokuankuan) Maybe we should also let L0 files use this zone?
+  int reserved_zones = 1;
   // opening_files.emplace(fname);
 
   LatencyHistGuard guard(&io_alloc_latency_reporter_);
