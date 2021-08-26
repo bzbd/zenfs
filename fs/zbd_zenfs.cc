@@ -657,7 +657,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   auto t1 = std::chrono::system_clock::now();
 
   /* Reset any unused zones and finish used zones under capacity treshold*/
-  for (int i = 0; i < io_zones.size(); i++) {
+  for (int i = 0; !is_wal && i < io_zones.size(); i++) {
     // Unlock wal mutex and give wal thread a chance
     if (!is_wal && wal_zone_allocating_.load() > 0) {
       wal_zones_mtx.unlock();
@@ -688,7 +688,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
         Warn(logger_, "Failed resetting zone !");
       }
       // For wal file, we only reset once.
-      if (is_wal) break;
+      // if (is_wal) break;
 
       continue;
     }
@@ -704,7 +704,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
       active_io_zones_--;
     }
 
-    // Find a vitim with the smallest capacity.
+    // Find a victim with the smallest capacity.
     if (!z->IsFull()) {
       if (finish_victim == nullptr) {
         finish_victim = z;
