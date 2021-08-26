@@ -619,7 +619,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   // We shall reserve one more free zone for WAL files.
   // TODO(guokuankuan) Maybe we should also let L0 files use this zone?
-  int reserved_zones = 1;
+  int reserved_zones = 2;
   // opening_files.emplace(fname);
 
   LatencyHistGuard guard(&io_alloc_latency_reporter_);
@@ -638,11 +638,13 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   /* Make sure we are below the zone open limit */
   {
     std::unique_lock<std::mutex> lk(zone_resources_mtx_);
-    zone_resources_.wait(lk, [this, is_wal, reserved_zones] {
-      if (!is_wal) {
+    zone_resources_.wait(lk, [this, is_wal, reserved_zones, file_lifetime] {
+      if (is_wal) {
+        return open_io_zones_.load() < max_nr_open_io_zones_;
+      } else if(file_lifetime == 3 /* L0 */) {
         return open_io_zones_.load() < max_nr_open_io_zones_ - reserved_zones;
       } else {
-        return open_io_zones_.load() < max_nr_open_io_zones_;
+        return open_io_zones_.load() < max_nr_open_io_zones_ - reserved_zones - 1;
       }
       return false;
     });
