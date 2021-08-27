@@ -8,6 +8,9 @@ conventional block devices. ZenFS ensures that there is no background
 garbage collection in the file system or on the disk, improving performance
 in terms of throughput, tail latencies and disk endurance.
 
+ByteDance has modified ZenFS in various way for performance. See source code
+for more information.
+
 ## Dependencies
 
 ZenFS depends on[ libzbd ](https://github.com/westerndigitalcorporation/libzbd)
