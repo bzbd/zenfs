@@ -203,9 +203,10 @@ ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger>
 static std::string write_latency_metric_name = "zenfs_write_latency";
 static std::string read_latency_metric_name = "zenfs_read_latency";
 static std::string sync_latency_metric_name = "zenfs_sync_latency";
-static std::string io_alloc_latency_metric_name = "zenfs_io_alloc_latency";
-static std::string io_alloc_actual_latency_metric_name =
-    "zenfs_io_actual_alloc_latency";
+static std::string io_alloc_wal_latency_metric_name = "zenfs_io_alloc_wal_latency";
+static std::string io_alloc_non_wal_latency_metric_name = "zenfs_io_alloc_non_wal_latency";
+static std::string io_alloc_wal_actual_latency_metric_name = "zenfs_io_alloc_wal_actual_latency";
+static std::string io_alloc_non_wal_actual_latency_metric_name = "zenfs_io_alloc_non_wal_actual_latency";
 static std::string meta_alloc_latency_metric_name = "zenfs_meta_alloc_latency";
 static std::string roll_latency_metric_name = "zenfs_roll_latency";
 
@@ -242,12 +243,14 @@ ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger>
       meta_alloc_latency_reporter_(
           *metrics_reporter_factory_->BuildHistReporter(
               meta_alloc_latency_metric_name, bytedance_tags_, logger.get())),
-      io_alloc_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
-          io_alloc_latency_metric_name, bytedance_tags_, logger.get())),
-      io_alloc_actual_latency_reporter_(
-          *metrics_reporter_factory_->BuildHistReporter(
-              io_alloc_actual_latency_metric_name, bytedance_tags_,
-              logger.get())),
+      io_alloc_wal_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
+              io_alloc_wal_latency_metric_name, bytedance_tags_, logger.get())),
+      io_alloc_non_wal_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
+              io_alloc_non_wal_latency_metric_name, bytedance_tags_, logger.get())),
+      io_alloc_wal_actual_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
+              io_alloc_wal_actual_latency_metric_name, bytedance_tags_, logger.get())),
+      io_alloc_non_wal_actual_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
+              io_alloc_non_wal_actual_latency_metric_name, bytedance_tags_, logger.get())),
       roll_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
           roll_latency_metric_name, bytedance_tags_, logger.get())),
       write_qps_reporter_(*metrics_reporter_factory_->BuildCountReporter(
@@ -559,7 +562,14 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   // We reserve one more free zone for WAL files in case RocksDB delay close WAL files.
   int reserved_zones = 1;
 
-  LatencyHistGuard guard(&io_alloc_latency_reporter_);
+  LatencyHistGuard guard_wal;
+  LatencyHistGuard guard_non_wal;
+  LatencyHistGuard guard_wal_actual;
+  LatencyHistGuard guard_non_wal_actual;
+
+  guard_non_wal.count_now(&io_alloc_non_wal_latency_reporter_);
+  guard_wal.count_now(&io_alloc_wal_latency_reporter_);
+
   io_alloc_qps_reporter_.AddCount(1);
 
   auto t0 = std::chrono::system_clock::now();
@@ -587,9 +597,12 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   // For general files, it needs both io mutex & wal mutex.
   wal_zones_mtx.lock();
-  if (is_wal) wal_zone_allocating_--;
-
-  LatencyHistGuard guard_actual(&io_alloc_actual_latency_reporter_);
+  if (is_wal) {
+    wal_zone_allocating_--;
+    guard_wal_actual.count_now(&io_alloc_wal_actual_latency_reporter_);
+  } else {
+    guard_non_wal_actual.count_now(&io_alloc_non_wal_actual_latency_reporter_);
+  }
 
   auto t1 = std::chrono::system_clock::now();
 

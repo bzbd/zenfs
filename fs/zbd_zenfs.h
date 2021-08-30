@@ -176,8 +176,10 @@ class ZonedBlockDevice {
   LatencyReporter read_latency_reporter_;
   LatencyReporter sync_latency_reporter_;
   LatencyReporter meta_alloc_latency_reporter_;
-  LatencyReporter io_alloc_latency_reporter_;
-  LatencyReporter io_alloc_actual_latency_reporter_;
+  LatencyReporter io_alloc_wal_latency_reporter_;
+  LatencyReporter io_alloc_wal_actual_latency_reporter_;
+  LatencyReporter io_alloc_non_wal_latency_reporter_;
+  LatencyReporter io_alloc_non_wal_actual_latency_reporter_;
   LatencyReporter roll_latency_reporter_;
 
   using QPSReporter = CountReporterHandle &;
