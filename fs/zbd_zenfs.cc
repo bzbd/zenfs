@@ -643,13 +643,13 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   // We reserve one more free zone for WAL files in case RocksDB delay close WAL files.
   int reserved_zones = 1;
 
-  LatencyHistGuard guard_wal;
-  LatencyHistGuard guard_non_wal;
-  LatencyHistGuard guard_wal_actual;
-  LatencyHistGuard guard_non_wal_actual;
+  LatencyHistGuard guard_total;
+  LatencyHistGuard guard_actual;
+  
+  auto *reporter_total = is_wal ? &io_alloc_wal_latency_reporter_
+          : &io_alloc_non_wal_latency_reporter_;
 
-  guard_non_wal.count_now(&io_alloc_non_wal_latency_reporter_);
-  guard_wal.count_now(&io_alloc_wal_latency_reporter_);
+  guard_total.count_now(reporter_total);
 
   io_alloc_qps_reporter_.AddCount(1);
 
@@ -680,9 +680,9 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   wal_zones_mtx.lock();
   if (is_wal) {
     wal_zone_allocating_--;
-    guard_wal_actual.count_now(&io_alloc_wal_actual_latency_reporter_);
+    guard_actual.count_now(&io_alloc_wal_actual_latency_reporter_);
   } else {
-    guard_non_wal_actual.count_now(&io_alloc_non_wal_actual_latency_reporter_);
+    guard_actual.count_now(&io_alloc_non_wal_actual_latency_reporter_);
   }
 
   auto t1 = std::chrono::system_clock::now();
