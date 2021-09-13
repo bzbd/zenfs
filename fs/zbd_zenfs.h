@@ -19,6 +19,8 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <function>
+#include <list>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -42,6 +44,14 @@ struct zenfs_aio_ctx {
   int fd;
 };
 
+enum ZoneState {
+  kEmpty = 0,
+  kActive,
+  kReadOnly,
+  kMetaLog,
+  kMetaSnapshot
+};
+
 class Zone {
   ZonedBlockDevice *zbd_;
 
@@ -56,6 +66,7 @@ class Zone {
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<long> used_capacity_;
   struct zenfs_aio_ctx wr_ctx;
+  ZoneState state_;
 
   IOStatus Reset();
   IOStatus Finish();
@@ -75,6 +86,14 @@ class Zone {
   void CloseWR(); /* Done writing */
 };
 
+class BackgroundWorker {
+  std::thread worker_;
+  std::list<std::function<void(void*)>> jobs_;
+public:
+  void ProcessJobs();
+  int SubmitJob(std::function<void(void*)> fn);
+};
+
 class ZonedBlockDevice {
  private:
   std::string filename_;
@@ -91,6 +110,13 @@ class ZonedBlockDevice {
   time_t start_time_;
   std::shared_ptr<Logger> logger_;
   uint32_t finish_threshold_ = 0;
+
+  std::shared_ptr<BackgroundWorker> meta_worker_;
+  std::shared_ptr<BackgroundWorker> data_worker_;
+  std::list<Zone *> active_zones_list_;
+  std::mutex active_zone_list_mtx_;
+
+  std::atomic<int> fg_request_;
 
   // If a thread is allocating a zone fro WAL files, other
   // thread shouldn't take `io_zones_mtx` (see AllocateZone())

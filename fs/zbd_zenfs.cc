@@ -277,6 +277,15 @@ std::vector<ZoneStat> ZonedBlockDevice::GetStat() {
   return stat;
 }
 
+void BackgroundWorker::ProcessJobs() {
+  // TODO
+}
+
+int BackgroundWorker::SubmitJob(std::function<void(void*)> fn) {
+  // TODO
+  return 0;
+}
+
 ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger> logger)
     : ZonedBlockDevice(bdevname, logger, "", std::make_shared<ByteDanceMetricsReporterFactory>()) {}
 
