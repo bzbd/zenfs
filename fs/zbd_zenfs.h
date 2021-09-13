@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <memory>
 #if !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 
 #include <errno.h>
@@ -15,15 +16,15 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <libaio.h>
 
 #include <atomic>
 #include <condition_variable>
-#include <function>
+#include <functional>
 #include <list>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -44,13 +45,15 @@ struct zenfs_aio_ctx {
   int fd;
 };
 
-enum ZoneState {
-  kEmpty = 0,
-  kActive,
-  kReadOnly,
-  kMetaLog,
-  kMetaSnapshot
-};
+/* From prespective of foreground thread, a single zone could be one of these
+ * status.
+ * kEmpty        | Zone is empty. Could be meta zone or data zone.
+ * kActive       | This data zone is open for write.
+ * kReadOnly     | This data zone is read only.
+ * kMetaLog      | This zone is for meta logging.
+ * kMetaSnapshot | This zone is used to store meta snapshots.
+ */
+enum ZoneState { kEmpty = 0, kActive, kReadOnly, kMetaLog, kMetaSnapshot };
 
 class Zone {
   ZonedBlockDevice *zbd_;
@@ -86,12 +89,44 @@ class Zone {
   void CloseWR(); /* Done writing */
 };
 
+class BackgroundJob {
+ public:
+  BackgroundJob(std::function<int(void *)> fn, void *arg)
+      : fn_(fn), arg_(arg) {}
+  std::function<int(void *)> fn_;
+  void *arg_;
+  virtual void operator()() { fn_(arg_); }
+  virtual ~BackgroundJob();
+};
+
+class ErrorHandlingBGJob : public BackgroundJob {
+ public:
+  ErrorHandlingBGJob(std::function<int(void *)> fn, void *arg,
+                     std::function<void(int)> handler)
+      : BackgroundJob(fn, arg), handler_(handler) {}
+  ErrorHandlingBGJob(std::function<int(void *)> fn, void *arg,
+                     std::function<void(int)> &&handler)
+      : BackgroundJob(fn, arg), handler_(handler) {}
+  std::function<void(int)> handler_;
+  virtual void operator()() override { handler_(fn_(arg_)); }
+};
+
 class BackgroundWorker {
+  enum WorkingState { kWaiting = 0, kRunning, kTerminated } state_;
   std::thread worker_;
-  std::list<std::function<void(void*)>> jobs_;
-public:
+  std::list<BackgroundJob> jobs_;
+  std::unique_ptr<BackgroundJob> job_now_;
+  std::mutex job_mtx_;
+
+ public:
+  BackgroundWorker(bool run_at_beginning = true);
+  ~BackgroundWorker();
+  void Wait();
+  void Run();
+  void Terminate();
   void ProcessJobs();
-  int SubmitJob(std::function<void(void*)> fn);
+  void SubmitJob(std::function<int(void *)> fn, void *arg);
+  void SubmitJob(BackgroundJob &&job);
 };
 
 class ZonedBlockDevice {
@@ -151,7 +186,8 @@ class ZonedBlockDevice {
   Zone *GetIOZone(uint64_t offset);
 
   Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
-  Zone *AllocateMetaZone(std::mutex& metadata_reset_mtx, std::condition_variable& cv);
+  Zone *AllocateMetaZone(std::mutex &metadata_reset_mtx,
+                         std::condition_variable &cv);
 
   uint64_t GetFreeSpace();
   uint64_t GetUsedSpace();
@@ -187,7 +223,7 @@ class ZonedBlockDevice {
       return false;
     }
   }
-  
+
   bool SetMaxOpenZones(uint32_t max_open) {
     if (max_open == 0) /* No limit */
       return true;
