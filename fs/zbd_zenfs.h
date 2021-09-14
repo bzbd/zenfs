@@ -96,7 +96,7 @@ class BackgroundJob {
   std::function<int(void *)> fn_;
   void *arg_;
   virtual void operator()() { fn_(arg_); }
-  virtual ~BackgroundJob();
+  virtual ~BackgroundJob() {}
 };
 
 class ErrorHandlingBGJob : public BackgroundJob {
