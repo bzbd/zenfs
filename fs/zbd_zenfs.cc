@@ -66,7 +66,7 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
   memset(&wr_ctx.io_ctx, 0, sizeof(wr_ctx.io_ctx));
   wr_ctx.fd = zbd_->GetWriteFD();
   wr_ctx.iocbs[0] = &wr_ctx.iocb;
-  wr_ctx.inflight = 0; 
+  wr_ctx.inflight = 0;
 
   if (io_setup(1, &wr_ctx.io_ctx) < 0) {
     fprintf(stderr, "Failed to allocate io context\n");
@@ -197,7 +197,7 @@ IOStatus Zone::Sync() {
   int ret;
   timeout.tv_sec = 1;
   timeout.tv_nsec = 0;
-  
+
   if (wr_ctx.inflight == 0)
     return IOStatus::OK();
 
@@ -218,7 +218,7 @@ IOStatus Zone::Sync() {
     }
   }
 
-  wr_ctx.inflight = 0; 
+  wr_ctx.inflight = 0;
 
   return IOStatus::OK();
 }
@@ -230,7 +230,7 @@ IOStatus Zone::Append_async(char *data, uint32_t size) {
   IOStatus s;
 
   assert((size % zbd_->GetBlockSize()) == 0);
-  
+
   /* Make sure we don't have any outstanding writes */
   s = Sync();
   if (!s.ok())
@@ -247,7 +247,7 @@ IOStatus Zone::Append_async(char *data, uint32_t size) {
     return IOStatus::IOError("Failed to submit io");
   }
 
-  wr_ctx.inflight = size;  
+  wr_ctx.inflight = size;
   ptr += size;
   wp_ += size;
   capacity_ -= size;
@@ -278,14 +278,24 @@ std::vector<ZoneStat> ZonedBlockDevice::GetStat() {
 }
 
 BackgroundWorker::BackgroundWorker(bool run_at_beginning) {
-  worker_ = std::thread(&BackgroundWorker::ProcessJobs, this);
-  if (run_at_beginning) {
-    Run();
+  {
+    std::unique_lock<std::mutex> lk(job_mtx_);
+    if (run_at_beginning) {
+      Run();
+    }
   }
+
+  worker_ = std::thread(&BackgroundWorker::ProcessJobs, this);
 }
 
 BackgroundWorker::~BackgroundWorker() {
-  std::unique_lock<std::mutex> lk(job_mtx_);
+  {
+    std::unique_lock<std::mutex> lk(job_mtx_);
+    Terminate();
+    job_cv_.notify_all();
+  }
+
+  worker_.join();
   for (auto& job : jobs_) {
     job();
   }
@@ -304,23 +314,26 @@ void BackgroundWorker::Terminate() {
 }
 
 void BackgroundWorker::ProcessJobs() {
-  do {
-    if (state_ == kRunning && !jobs_.empty()) {
-      {
-        std::unique_lock<std::mutex> lk(job_mtx_);
-        *job_now_ = jobs_.front();
-        jobs_.pop_front();
+  while (true) {
+    {
+      std::unique_lock<std::mutex> lk(job_mtx_);
+
+      job_cv_.wait(lk, [this](){return !jobs_.empty() || state_ == kTerminated;});
+      if (state_ == kTerminated && jobs_.empty()) {
+        return;
       }
-      (*job_now_)();        
-    } else {
-      std::this_thread::yield();
+
+      job_now_.reset(new BackgroundJob(jobs_.front()));
+      jobs_.pop_front();
     }
-  } while (state_ != kTerminated);
+    (*job_now_)();
+  }
 }
 
 void BackgroundWorker::SubmitJob(std::function<int(void*)> fn, void* arg) {
   std::unique_lock<std::mutex> lk(job_mtx_);
   jobs_.emplace_back(fn, arg);
+  job_cv_.notify_one();
 }
 
 void BackgroundWorker::SubmitJob(BackgroundJob&& job) {

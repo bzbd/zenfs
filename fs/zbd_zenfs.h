@@ -92,8 +92,8 @@ class Zone {
 class BackgroundJob {
  public:
   BackgroundJob(std::function<int(void *)> fn, void *arg)
-      : fn_(fn), arg_(arg) {}
-  std::function<int(void *)> fn_;
+       : fn_(fn), arg_(arg) {}
+   std::function<int(void *)> fn_;
   void *arg_;
   virtual void operator()() { fn_(arg_); }
   virtual ~BackgroundJob() {}
@@ -102,13 +102,13 @@ class BackgroundJob {
 class ErrorHandlingBGJob : public BackgroundJob {
  public:
   ErrorHandlingBGJob(std::function<int(void *)> fn, void *arg,
-                     std::function<void(int)> handler)
-      : BackgroundJob(fn, arg), handler_(handler) {}
-  ErrorHandlingBGJob(std::function<int(void *)> fn, void *arg,
-                     std::function<void(int)> &&handler)
-      : BackgroundJob(fn, arg), handler_(handler) {}
-  std::function<void(int)> handler_;
-  virtual void operator()() override { handler_(fn_(arg_)); }
+                      std::function<void(int)> handler)
+       : BackgroundJob(fn, arg), handler_(handler) {}
+   ErrorHandlingBGJob(std::function<int(void *)> fn, void *arg,
+                      std::function<void(int)> &&handler)
+       : BackgroundJob(fn, arg), handler_(handler) {}
+   std::function<void(int)> handler_;
+   virtual void operator()() override { handler_(fn_(arg_)); }
 };
 
 class BackgroundWorker {
@@ -117,6 +117,7 @@ class BackgroundWorker {
   std::list<BackgroundJob> jobs_;
   std::unique_ptr<BackgroundJob> job_now_;
   std::mutex job_mtx_;
+  std::condition_variable job_cv_;
 
  public:
   BackgroundWorker(bool run_at_beginning = true);
