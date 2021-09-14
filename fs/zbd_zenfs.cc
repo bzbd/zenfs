@@ -289,6 +289,8 @@ BackgroundWorker::~BackgroundWorker() {
   for (auto& job : jobs_) {
     job();
   }
+  Terminate();
+  worker_.join();
 }
 
 void BackgroundWorker::Wait() {
