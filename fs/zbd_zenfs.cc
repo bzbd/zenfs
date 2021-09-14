@@ -66,7 +66,7 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
   memset(&wr_ctx.io_ctx, 0, sizeof(wr_ctx.io_ctx));
   wr_ctx.fd = zbd_->GetWriteFD();
   wr_ctx.iocbs[0] = &wr_ctx.iocb;
-  wr_ctx.inflight = 0; 
+  wr_ctx.inflight = 0;
 
   if (io_setup(1, &wr_ctx.io_ctx) < 0) {
     fprintf(stderr, "Failed to allocate io context\n");
@@ -197,7 +197,7 @@ IOStatus Zone::Sync() {
   int ret;
   timeout.tv_sec = 1;
   timeout.tv_nsec = 0;
-  
+
   if (wr_ctx.inflight == 0)
     return IOStatus::OK();
 
@@ -218,7 +218,7 @@ IOStatus Zone::Sync() {
     }
   }
 
-  wr_ctx.inflight = 0; 
+  wr_ctx.inflight = 0;
 
   return IOStatus::OK();
 }
@@ -230,7 +230,7 @@ IOStatus Zone::Append_async(char *data, uint32_t size) {
   IOStatus s;
 
   assert((size % zbd_->GetBlockSize()) == 0);
-  
+
   /* Make sure we don't have any outstanding writes */
   s = Sync();
   if (!s.ok())
@@ -247,7 +247,7 @@ IOStatus Zone::Append_async(char *data, uint32_t size) {
     return IOStatus::IOError("Failed to submit io");
   }
 
-  wr_ctx.inflight = size;  
+  wr_ctx.inflight = size;
   ptr += size;
   wp_ += size;
   capacity_ -= size;
@@ -285,12 +285,12 @@ BackgroundWorker::BackgroundWorker(bool run_at_beginning) {
 }
 
 BackgroundWorker::~BackgroundWorker() {
+  Terminate();
   std::unique_lock<std::mutex> lk(job_mtx_);
+  worker_.join();
   for (auto& job : jobs_) {
     job();
   }
-  Terminate();
-  worker_.join();
 }
 
 void BackgroundWorker::Wait() {
@@ -306,6 +306,7 @@ void BackgroundWorker::Terminate() {
 }
 
 void BackgroundWorker::ProcessJobs() {
+
   do {
     if (state_ == kRunning && !jobs_.empty()) {
       {
@@ -313,7 +314,7 @@ void BackgroundWorker::ProcessJobs() {
         *job_now_ = jobs_.front();
         jobs_.pop_front();
       }
-      (*job_now_)();        
+      (*job_now_)();
     } else {
       std::this_thread::yield();
     }
