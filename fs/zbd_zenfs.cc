@@ -358,7 +358,7 @@ ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger>
                                    std::shared_ptr<MetricsReporterFactory> metrics_reporter_factory)
     : filename_("/dev/" + bdevname),
       logger_(logger),
-      metrics_reporter_factory_(metrics_reporter_factory),
+      metrics_reporter_factory_(new CurriedMetricsReporterFactory(metrics_reporter_factory, logger.get(), Env::Default())),
       // A short advice for new developers: BE SURE TO STORE `bytedance_tags_`
       // somewhere,
       // and pass the stored `bytedance_tags_` to the reporters. Otherwise the
@@ -366,44 +366,44 @@ ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger>
       // library will panic with `std::logic_error`.
       bytedance_tags_(bytedance_tags),
       write_latency_reporter_(
-          *metrics_reporter_factory_->BuildHistReporter(write_latency_metric_name, bytedance_tags_, logger.get())),
+          *metrics_reporter_factory_->BuildHistReporter(write_latency_metric_name, bytedance_tags_)),
       read_latency_reporter_(
-          *metrics_reporter_factory_->BuildHistReporter(read_latency_metric_name, bytedance_tags_, logger.get())),
+          *metrics_reporter_factory_->BuildHistReporter(read_latency_metric_name, bytedance_tags_)),
       sync_latency_reporter_(
-          *metrics_reporter_factory_->BuildHistReporter(sync_latency_metric_name, bytedance_tags_, logger.get())),
+          *metrics_reporter_factory_->BuildHistReporter(sync_latency_metric_name, bytedance_tags_)),
       meta_alloc_latency_reporter_(
           *metrics_reporter_factory_->BuildHistReporter(
-              meta_alloc_latency_metric_name, bytedance_tags_, logger.get())),
+              meta_alloc_latency_metric_name, bytedance_tags_)),
       io_alloc_wal_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
-              io_alloc_wal_latency_metric_name, bytedance_tags_, logger.get())),
+              io_alloc_wal_latency_metric_name, bytedance_tags_)),
       io_alloc_non_wal_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
-              io_alloc_non_wal_latency_metric_name, bytedance_tags_, logger.get())),
+              io_alloc_non_wal_latency_metric_name, bytedance_tags_)),
       io_alloc_wal_actual_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
-              io_alloc_wal_actual_latency_metric_name, bytedance_tags_, logger.get())),
+              io_alloc_wal_actual_latency_metric_name, bytedance_tags_)),
       io_alloc_non_wal_actual_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
-              io_alloc_non_wal_actual_latency_metric_name, bytedance_tags_, logger.get())),
+              io_alloc_non_wal_actual_latency_metric_name, bytedance_tags_)),
       roll_latency_reporter_(*metrics_reporter_factory_->BuildHistReporter(
-          roll_latency_metric_name, bytedance_tags_, logger.get())),
+          roll_latency_metric_name, bytedance_tags_)),
       write_qps_reporter_(*metrics_reporter_factory_->BuildCountReporter(
-          write_qps_metric_name, bytedance_tags_, logger.get())),
+          write_qps_metric_name, bytedance_tags_)),
       read_qps_reporter_(*metrics_reporter_factory_->BuildCountReporter(
-          read_qps_metric_name, bytedance_tags_, logger.get())),
+          read_qps_metric_name, bytedance_tags_)),
       sync_qps_reporter_(*metrics_reporter_factory_->BuildCountReporter(
-          sync_qps_metric_name, bytedance_tags_, logger.get())),
+          sync_qps_metric_name, bytedance_tags_)),
       meta_alloc_qps_reporter_(*metrics_reporter_factory_->BuildCountReporter(
-          meta_alloc_qps_metric_name, bytedance_tags_, logger.get())),
+          meta_alloc_qps_metric_name, bytedance_tags_)),
       io_alloc_qps_reporter_(*metrics_reporter_factory_->BuildCountReporter(
-          io_alloc_qps_metric_name, bytedance_tags_, logger.get())),
+          io_alloc_qps_metric_name, bytedance_tags_)),
       roll_qps_reporter_(*metrics_reporter_factory_->BuildCountReporter(
-          roll_qps_metric_name, bytedance_tags_, logger.get())),
+          roll_qps_metric_name, bytedance_tags_)),
       write_throughput_reporter_(*metrics_reporter_factory_->BuildCountReporter(
-          write_throughput_metric_name, bytedance_tags_, logger.get())),
+          write_throughput_metric_name, bytedance_tags_)),
       roll_throughput_reporter_(*metrics_reporter_factory_->BuildCountReporter(
-          roll_throughput_metric_name, bytedance_tags_, logger.get())),
+          roll_throughput_metric_name, bytedance_tags_)),
       active_zones_reporter_(*metrics_reporter_factory_->BuildHistReporter(
-          active_zones_metric_name, bytedance_tags_, logger.get())),
+          active_zones_metric_name, bytedance_tags_)),
       open_zones_reporter_(*metrics_reporter_factory_->BuildHistReporter(
-          open_zones_metric_name, bytedance_tags_, logger.get())) {
+          open_zones_metric_name, bytedance_tags_)) {
   Info(logger_, "New Zoned Block Device: %s (with metrics enabled)",
        filename_.c_str());
 }
@@ -712,13 +712,12 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   // We reserve one more free zone for WAL files in case RocksDB delay close WAL files.
   int reserved_zones = 1;
 
-  LatencyHistGuard guard_total;
-  LatencyHistGuard guard_actual;
 
   auto *reporter_total = is_wal ? &io_alloc_wal_latency_reporter_
           : &io_alloc_non_wal_latency_reporter_;
-
-  guard_total.count_now(reporter_total);
+  auto *reporter_actual = is_wal ? &io_alloc_wal_actual_latency_reporter_
+	  : &io_alloc_non_wal_actual_latency_reporter_;
+  LatencyHistGuard guard_total(reporter_total);
 
   io_alloc_qps_reporter_.AddCount(1);
 
@@ -749,11 +748,9 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   wal_zones_mtx.lock();
   if (is_wal) {
     wal_zone_allocating_--;
-    guard_actual.count_now(&io_alloc_wal_actual_latency_reporter_);
-  } else {
-    guard_actual.count_now(&io_alloc_non_wal_actual_latency_reporter_);
   }
-
+  LatencyHistGuard guard_actual(reporter_actual);
+  
   auto t1 = std::chrono::system_clock::now();
 
   /* Reset any unused zones and finish used zones under capacity treshold*/
