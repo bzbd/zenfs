@@ -242,7 +242,7 @@ class ZonedBlockDevice {
 
   std::vector<ZoneStat> GetStat();
 
-  std::shared_ptr<MetricsReporterFactory> metrics_reporter_factory_;
+  std::shared_ptr<CurriedMetricsReporterFactory> metrics_reporter_factory_;
   std::string bytedance_tags_;
 
   using LatencyReporter = HistReporterHandle &;
