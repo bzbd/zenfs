@@ -27,13 +27,36 @@ int deep_thought(void* arg) {
   return 42;
 }
 
+// Assume this arg contains zone number that you wanna operate with, which is a int
+int arg_deep_thought(void* arg) {
+  int elapsed_time = rand() % 1000;
+  std::this_thread::sleep_for(std::chrono::microseconds(elapsed_time));
+  // Get the correct type manually
+  int zone_number = *(int*) arg;
+  // Do the job with the arg brings in.
+  std::cout << "operating zone:" << zone_number << std::endl;
+  // return value shows is this operation successfully done or not,
+  // most commonly, 0 stands for success, other stands for failed,
+  // For jobs that could failed, using the errorhandlingbgjob which 
+  // will get this return value and process error handling.
+  return 0;
+}
+  
+std:vector<int> zone_numbers;
+  
 int test() {
   BackgroundWorker bg_worker;
   int num_jobs = 1000000;
-
   for (int i = 0; i < num_jobs; i++) {
-    bg_worker.SubmitJob(&ROCKSDB_NAMESPACE::deep_thought, &question);
+    // Assume job for each zone.
+    zone_numbers.emplace_back(i);
+    // Submit the job with zone_number[i] where hold the zone number.
+    bg_worker.SubmitJob(&ROCKSDB_NAMESPACE::arg_deep_thought, &zone_numbers[i]);
   }
+  
+//   for (int i = 0; i < num_jobs; i++) {
+//     bg_worker.SubmitJob(&ROCKSDB_NAMESPACE::deep_thought, &question);
+//   }
   return 0;
 }
 }  // namespace ROCKSDB_NAMESPACE
