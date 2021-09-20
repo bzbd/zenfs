@@ -152,7 +152,10 @@ class ZenFS : public FileSystemWrapper {
   void ClearFiles();
   IOStatus WriteSnapshotLocked(ZenMetaLog* meta_log);
   IOStatus WriteEndRecord(ZenMetaLog* meta_log);
+  IOStatus RollMetaZone();
   IOStatus RollMetaZoneLocked();
+  /* experimental function only! */
+  IOStatus RollMetaZoneAsync();
   IOStatus PersistSnapshot(ZenMetaLog* meta_writer);
   IOStatus PersistRecord(std::string record);
   IOStatus SyncFileMetadata(ZoneFile* zoneFile);

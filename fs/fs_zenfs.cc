@@ -288,6 +288,23 @@ IOStatus ZenFS::WriteEndRecord(ZenMetaLog* meta_log) {
 }
 
 /* Assumes the files_mtx_ is held */
+IOStatus ZenFS::RollMetaZone() {
+#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+  return RollMetaZoneAsync();
+#else
+  return RollMetaZoneLocked();
+#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+}
+
+#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+/* Assumes the files_mtx_ is held */
+IOStatus ZenFS::RollMetaZoneAsync() {
+  return IOStatus::IOError("Calling experimental function "
+                           "ZenFS::RollMetaZoneAsync()!!");
+}
+#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+
+/* Assumes the files_mtx_ is held */
 IOStatus ZenFS::RollMetaZoneLocked() {
   ZenMetaLog* new_meta_log;
   Zone *new_meta_zone, *old_meta_zone;
@@ -353,7 +370,7 @@ IOStatus ZenFS::PersistSnapshot(ZenMetaLog* meta_writer) {
   s = WriteSnapshotLocked(meta_writer);
   if (s == IOStatus::NoSpace()) {
     Info(logger_, "Current meta zone full, rolling to next meta zone");
-    s = RollMetaZoneLocked();
+    s = RollMetaZone();
   }
 
   if (!s.ok()) {
@@ -374,7 +391,7 @@ IOStatus ZenFS::PersistRecord(std::string record) {
   s = meta_log_->AddRecord(record);
   if (s == IOStatus::NoSpace()) {
     Info(logger_, "Current meta zone full, rolling to next meta zone");
-    s = RollMetaZoneLocked();
+    s = RollMetaZone();
     /* After a successfull roll, a complete snapshot has been persisted
      * - no need to write the record update */
   }
@@ -987,7 +1004,7 @@ Status ZenFS::Mount(bool readonly) {
     Info(logger_, "Mounting READ ONLY");
   } else {
     files_mtx_.lock();
-    s = RollMetaZoneLocked();
+    s = RollMetaZone();
     if (!s.ok()) {
       files_mtx_.unlock();
       Error(logger_, "Failed to roll metadata zone.");
