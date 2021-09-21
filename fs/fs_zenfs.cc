@@ -227,6 +227,9 @@ ZenFS::~ZenFS() {
   LogFiles();
 
   meta_log_.reset(nullptr);
+#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+  meta_snapshot_log_.reset(nullptr);
+#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   ClearFiles();
   delete zbd_;
 }

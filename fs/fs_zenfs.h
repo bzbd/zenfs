@@ -125,6 +125,7 @@ class ZenFS : public FileSystemWrapper {
 
   Zone* cur_meta_zone_ = nullptr;
   std::unique_ptr<ZenMetaLog> meta_log_;
+  std::unique_ptr<ZenMetaLog> meta_snapshot_log_;
   std::mutex metadata_sync_mtx_;
   std::unique_ptr<Superblock> superblock_;
 

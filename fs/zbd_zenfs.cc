@@ -46,6 +46,10 @@
  */
 #define ZENFS_META_ZONES (4)
 
+/* Number of reserved zones for metadata snapshot
+ */
+#define ZENFS_SNAPSHOT_ZONES (2)
+
 /* Minimum of number of zones that makes sense */
 #define ZENFS_MIN_ZONES (32)
 
@@ -458,6 +462,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
   Status s;
   uint64_t i = 0;
   uint64_t m = 0;
+  uint64_t snapshot_zones_num = 0;
   int ret;
 
   read_f_ = zbd_open(filename_.c_str(), O_RDONLY, &info);
@@ -528,6 +533,20 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
       m++;
     }
   }
+
+#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+  // initialize metadata snapshop zones
+  while (snapshot_zones_num < ZENFS_SNAPSHOT_ZONES && i < reported_zones) {
+    struct zbd_zone *z = &zone_rep[i++];
+    /* Only use sequential write required zones */
+    if (zbd_zone_type(z) == ZBD_ZONE_TYPE_SWR) {
+      if (!zbd_zone_offline(z)) {
+        meta_snapshot_zones.push_back(new Zone(this, z));
+      }
+      snapshot_zones_num++;
+    }
+  }
+#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
 
   active_io_zones_ = 0;
   open_io_zones_ = 0;
@@ -635,6 +654,12 @@ ZonedBlockDevice::~ZonedBlockDevice() {
   for (const auto z : meta_zones) {
     delete z;
   }
+
+#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+  for (const auto z : meta_snapshot_zones) {
+    delete z;
+  }
+#endif
 
   for (const auto z : io_zones) {
     delete z;
@@ -916,6 +941,10 @@ void ZonedBlockDevice::EncodeJson(std::ostream &json_stream) {
   json_stream << "{";
   json_stream << "\"meta\":";
   EncodeJsonZone(json_stream, meta_zones);
+#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+  json_stream << "\"meta snapshot\":";
+  EncodeJsonZone(json_stream, meta_snapshot_zones);
+#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   json_stream << ",\"io\":";
   EncodeJsonZone(json_stream, io_zones);
   json_stream << "}";

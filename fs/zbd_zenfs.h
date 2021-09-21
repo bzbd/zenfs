@@ -141,6 +141,7 @@ class ZonedBlockDevice {
   std::mutex io_zones_mtx;
   std::mutex wal_zones_mtx;
   std::vector<Zone *> meta_zones;
+  std::vector<Zone *> meta_snapshot_zones;
   int read_f_;
   int read_direct_f_;
   int write_f_;
@@ -214,6 +215,7 @@ class ZonedBlockDevice {
   uint32_t GetMaxOpenZones() { return max_nr_open_io_zones_ + 1; };
 
   std::vector<Zone *> GetMetaZones() { return meta_zones; }
+  std::vector<Zone *> GetMetaSnapshotZones() { return meta_snapshot_zones; }
 
   void SetFinishTreshold(uint32_t threshold) { finish_threshold_ = threshold; }
 
