@@ -2,14 +2,16 @@
 #include <fcntl.h>
 #include <gflags/gflags.h>
 #include <rocksdb/file_system.h>
-#include <rocksdb/plugin/zenfs/fs/fs_zenfs.h>
-#include <rocksdb/plugin/zenfs/fs/zbd_zenfs.h>
+#include <third-party/zenfs/fs/fs_zenfs.h>
+#include <third-party/zenfs/fs/zbd_zenfs.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <iostream>
+#include <memory>
 #include <numeric>
 #include <stdlib.h>
 #include <string>
@@ -21,7 +23,7 @@ using GFLAGS_NAMESPACE::SetUsageMessage;
 
 namespace ROCKSDB_NAMESPACE {
 
-const int num_jobs = 100000;
+const int num_jobs = 1000;
 std::vector<int> zone_numbers(num_jobs);
 std::atomic<int> actual_zone_number_sum(0);
 
@@ -54,9 +56,29 @@ int test_sum_in_background_worker() {
 
   {
     BackgroundWorker bg_worker;
+    // Submit a simple job using a lambda function.
+    bg_worker.SubmitJob([&](){
+      std::cout << 42 << std::endl;
+    });
+
+    // Submit the job take zone number as argument.
+    std::function<bool(int)> executor = [](int arg) {
+      std::cout << arg << " : ";
+      return arg % 7 == 0; 
+    };
+
+    // if referenced zone number can be devided by 7, print VERITAS.
+    std::function<void(bool)> error_handler = [](bool ret) {
+      if (ret) {
+        std::cout << "!!!VERITAS!!!";
+      }
+      std::cout << std::endl;
+    };
+
     for (int i = 0; i < zone_numbers.size(); i++) {
-      // Submit the job with zone_number[i] where hold the zone number.
-      bg_worker.SubmitJob(&ROCKSDB_NAMESPACE::sum_zone_number, &zone_numbers[i]);
+      bg_worker.SubmitJob(std::make_unique<GeneralJob<int, bool>>(
+        executor, zone_numbers[i], error_handler
+      ));
     }
   }
 
