@@ -235,6 +235,9 @@ ZoneFile::~ZoneFile() {
     assert(zone && zone->used_capacity_ >= (*e)->length_);
     zone->used_capacity_ -= (*e)->length_;
     delete *e;
+    if (zone->used_capacity_ == 0) {
+      zone->zbd_->BgResetDataZone(zone);
+    }
   }
   CloseWR();
 }

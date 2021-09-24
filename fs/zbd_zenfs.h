@@ -49,19 +49,19 @@ struct zenfs_aio_ctx {
 /* From prespective of foreground thread, a single zone could be one of these
  * status.
  * kEmpty        | Zone is empty. Could be meta zone or data zone.
- * kActive       | This data zone is open for write.
+ * kActive       | This data zone is ready for write.
+ * kOccupied     | This data zone is occupied by other write thread.
  * kReadOnly     | This data zone is read only.
  * kMetaLog      | This zone is for meta logging.
  * kMetaSnapshot | This zone is used to store meta snapshots.
  */
-enum ZoneState { kEmpty = 0, kActive, kReadOnly, kMetaLog, kMetaSnapshot };
+enum ZoneState { kEmpty = 0, kActive, kOccupied, kReadOnly, kMetaLog, kMetaSnapshot };
 
 class Zone {
-  ZonedBlockDevice *zbd_;
-
- public:
+  public:
   explicit Zone(ZonedBlockDevice *zbd, struct zbd_zone *z);
-
+  
+  ZonedBlockDevice *zbd_;
   uint64_t start_;
   uint64_t capacity_; /* remaining capacity */
   uint64_t max_capacity_;
@@ -90,32 +90,46 @@ class Zone {
   void CloseWR(); /* Done writing */
 };
 
+// Abstract class as interface.
+// operator() must be overrided in order to execute the function.
 class BackgroundJob {
  public:
-  BackgroundJob(std::function<int(void *)> fn, void *arg)
-       : fn_(fn), arg_(arg) {}
-   std::function<int(void *)> fn_;
-  void *arg_;
-  virtual void operator()() { fn_(arg_); }
+  virtual void operator()() = 0;
   virtual ~BackgroundJob() {}
 };
 
-class ErrorHandlingBGJob : public BackgroundJob {
+// For simple jobs that needs no return value nor argument.
+class SimpleJob : public BackgroundJob {
  public:
-  ErrorHandlingBGJob(std::function<int(void *)> fn, void *arg,
-                      std::function<void(int)> handler)
-       : BackgroundJob(fn, arg), handler_(handler) {}
-   ErrorHandlingBGJob(std::function<int(void *)> fn, void *arg,
-                      std::function<void(int)> &&handler)
-       : BackgroundJob(fn, arg), handler_(handler) {}
-   std::function<void(int)> handler_;
-   virtual void operator()() override { handler_(fn_(arg_)); }
+  std::function<void()> fn_;
+  // No default allowed.
+  SimpleJob() = delete;
+  SimpleJob(std::function<void()> fn) : fn_(fn) {}
+  virtual void operator()() override { fn_(); }
+  virtual ~SimpleJob() {}
+};
+
+template<typename arg_t, typename ret_t>
+class GeneralJob : public BackgroundJob {
+ public:
+  // Job requires argument and return value for error handling
+  std::function<ret_t(arg_t)> fn_;
+  // Argument for execution
+  arg_t arg_;
+  // Error handler
+  std::function<void(ret_t)> hdl_;
+  // No default allowed
+  GeneralJob() = delete;
+  GeneralJob(std::function<ret_t(arg_t)> fn, arg_t arg,
+             std::function<void(ret_t)> hdl) : fn_(fn), arg_(arg), hdl_(hdl) {}
+  virtual void operator()() override { hdl_(fn_(arg_)); }
+  virtual ~GeneralJob() {}
 };
 
 class BackgroundWorker {
   enum WorkingState { kWaiting = 0, kRunning, kTerminated } state_;
   std::thread worker_;
-  std::list<BackgroundJob> jobs_;
+  std::list<std::unique_ptr<BackgroundJob>> jobs_;
   std::unique_ptr<BackgroundJob> job_now_;
   std::mutex job_mtx_;
   std::condition_variable job_cv_;
@@ -127,8 +141,10 @@ class BackgroundWorker {
   void Run();
   void Terminate();
   void ProcessJobs();
-  void SubmitJob(std::function<int(void *)> fn, void *arg);
-  void SubmitJob(BackgroundJob &&job);
+  // For simple jobs that could be handled in a lambda function.
+  void SubmitJob(std::function<void()> fn);
+  // For derived jobs which needs arguments
+  void SubmitJob(std::unique_ptr<BackgroundJob>&& job);
 };
 
 class ZonedBlockDevice {
@@ -151,8 +167,9 @@ class ZonedBlockDevice {
 
   std::shared_ptr<BackgroundWorker> meta_worker_;
   std::shared_ptr<BackgroundWorker> data_worker_;
-  std::list<Zone *> active_zones_list_;
-  std::mutex active_zone_list_mtx_;
+  std::vector<Zone *> active_zones_vec_;
+  static const int reserved_active_zones = 2;
+  std::mutex active_zone_vec_mtx_;
 
   std::atomic<int> fg_request_;
 
@@ -192,8 +209,16 @@ class ZonedBlockDevice {
   Zone *GetIOZone(uint64_t offset);
 
   Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
+  Zone *AllocateDataZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
   Zone *AllocateMetaZone();
 
+  Zone *GetDataZoneLocked(int start);
+  
+  // Submit a background job to refill active zone vector.
+  void BgRefillActiveZones();
+  void BgReplaceFromIOZones(int index);
+  void BgResetDataZone(Zone* target);
+  
   uint64_t GetFreeSpace();
   uint64_t GetUsedSpace();
   uint64_t GetReclaimableSpace();

@@ -4,6 +4,7 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
+#include <memory>
 #if !defined(ROCKSDB_LITE) && !defined(OS_WIN)
 
 #include "zbd_zenfs.h"
@@ -86,7 +87,7 @@ uint64_t Zone::GetZoneNr() { return start_ / zbd_->GetZoneSize(); }
 void Zone::CloseWR() {
   assert(open_for_write_);
   Sync();
-
+  state_ = kReadOnly;
   std::lock_guard<std::mutex> lock(zbd_->zone_resources_mtx_);
   if (Close().ok()) {
     assert(!open_for_write_);
@@ -94,6 +95,7 @@ void Zone::CloseWR() {
   }
 
   if (capacity_ == 0) zbd_->NotifyIOZoneFull();
+  zbd_->BgRefillActiveZones();
 }
 
 void Zone::EncodeJson(std::ostream &json_stream) {
@@ -301,7 +303,7 @@ BackgroundWorker::~BackgroundWorker() {
 
   worker_.join();
   for (auto& job : jobs_) {
-    job();
+    (*job)();
   }
 }
 
@@ -321,28 +323,27 @@ void BackgroundWorker::ProcessJobs() {
   while (true) {
     {
       std::unique_lock<std::mutex> lk(job_mtx_);
-
       job_cv_.wait(lk, [this](){return !jobs_.empty() || state_ == kTerminated;});
-      if (state_ == kTerminated && jobs_.empty()) {
+      if (state_ == kTerminated) {
         return;
       }
-
-      job_now_.reset(new BackgroundJob(jobs_.front()));
+      job_now_.swap(jobs_.front());
       jobs_.pop_front();
     }
     (*job_now_)();
   }
 }
 
-void BackgroundWorker::SubmitJob(std::function<int(void*)> fn, void* arg) {
+void BackgroundWorker::SubmitJob(std::function<void()> fn) {
   std::unique_lock<std::mutex> lk(job_mtx_);
-  jobs_.emplace_back(fn, arg);
+  jobs_.push_back(std::make_unique<SimpleJob>(fn));
   job_cv_.notify_one();
 }
 
-void BackgroundWorker::SubmitJob(BackgroundJob&& job) {
+void BackgroundWorker::SubmitJob(std::unique_ptr<BackgroundJob>&& job) {
   std::unique_lock<std::mutex> lk(job_mtx_);
-  jobs_.emplace_back(job);
+  jobs_.push_back(std::move(job));
+  job_cv_.notify_one();
 }
 
 ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger> logger)
@@ -915,6 +916,91 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   Info(logger_, "%s", ss.str().c_str());
 
   return allocated_zone;
+}
+
+Zone *ZonedBlockDevice::AllocateDataZone(Env::WriteLifeTimeHint file_lifetime, bool is_wal) {
+  // Ignore lifetime hint for now
+  (void)file_lifetime;
+
+  Zone* ret = nullptr;
+  if (is_wal) {
+    fg_request_++;
+    do {
+      {
+        std::unique_lock<std::mutex> lk(active_zone_vec_mtx_);
+        ret = GetDataZoneLocked(0);  
+      }
+      if (ret == nullptr) {
+        // Resources not enough, release lock for background worker and waiting.
+        std::this_thread::yield();
+      }
+    } while (ret == nullptr);
+    fg_request_--;
+  } else {
+    // Normal file
+    int request = 0;
+    do {
+      // Test if there is high priority requsets.
+      request = fg_request_.load();
+      if (request == 0) {
+        // Fetch one when no contention occurs.
+        std::unique_lock<std::mutex> lk(active_zone_vec_mtx_);
+        ret = GetDataZoneLocked(reserved_active_zones);
+      } else {
+        std::this_thread::yield();
+      }
+    } while (ret == nullptr);
+  }
+  return ret;
+}
+
+Zone *ZonedBlockDevice::GetDataZoneLocked(int start) {
+  for (int i = start; i < active_zones_vec_.size(); ++i) {
+    if (active_zones_vec_[i]->state_ == kActive) {
+      active_zones_vec_[i]->state_ = kOccupied;
+      return active_zones_vec_[i];
+    }
+  }
+  return nullptr;
+}
+
+void ZonedBlockDevice::BgRefillActiveZones() {
+  data_worker_->SubmitJob(
+    [&]() {
+      for (int i = 0; i < active_zones_vec_.size(); ++i) {
+        if (active_zones_vec_[i]->state_ == kReadOnly) {
+          std::unique_lock<std::mutex> lk(active_zone_vec_mtx_);
+          BgReplaceFromIOZones(i);
+        }
+      }
+    });
+}
+
+void ZonedBlockDevice::BgReplaceFromIOZones(int index) {
+  std::unique_lock<std::mutex> lk(io_zones_mtx);
+  for (auto& z : io_zones) {
+    if (z->state_ == kEmpty) {
+      z->state_ = kActive;
+      z->open_for_write_ = true;
+      active_zones_vec_[index] = z;
+    }
+  }
+}
+
+void ZonedBlockDevice::BgResetDataZone(Zone* target) {
+
+  std::function<IOStatus(Zone*)> fn = [&](Zone* z) -> IOStatus {
+    return z->Reset();
+  };
+
+  std::function<void(IOStatus)> hdl = [&](IOStatus s) {
+    if (!s.ok()) {
+      Error(logger_, "Failed to reset zones, err: %s", s.ToString().c_str());
+      assert(false);
+    }
+  };
+
+  data_worker_->SubmitJob(std::make_unique<GeneralJob<Zone*, IOStatus>>(fn, target, hdl));
 }
 
 std::string ZonedBlockDevice::GetFilename() { return filename_; }
