@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <memory>
 #if !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 
 #include <errno.h>
@@ -22,7 +21,9 @@
 #include <condition_variable>
 #include <functional>
 #include <list>
+#include <memory>
 #include <mutex>
+#include <queue>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -70,7 +71,7 @@ class Zone {
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<long> used_capacity_;
   struct zenfs_aio_ctx wr_ctx;
-  ZoneState state_;
+  std::atomic<ZoneState> state_;
 
   IOStatus Reset();
   IOStatus Finish();
@@ -153,7 +154,7 @@ class ZonedBlockDevice {
   uint32_t block_sz_;
   uint64_t zone_sz_;
   uint32_t nr_zones_;
-  std::vector<Zone *> io_zones;
+  std::list<Zone *> io_zones;
   std::mutex io_zones_mtx;
   std::mutex wal_zones_mtx;
   std::vector<Zone *> meta_zones;
@@ -171,7 +172,7 @@ class ZonedBlockDevice {
   static const int reserved_active_zones = 2;
   std::mutex active_zone_vec_mtx_;
 
-  std::atomic<int> fg_request_;
+  std::atomic<int> high_pri_requset_;
 
   // If a thread is allocating a zone fro WAL files, other
   // thread shouldn't take `io_zones_mtx` (see AllocateZone())
@@ -184,8 +185,9 @@ class ZonedBlockDevice {
   uint32_t max_nr_active_io_zones_;
   uint32_t max_nr_open_io_zones_;
 
+  template <class T>
   void EncodeJsonZone(std::ostream &json_stream,
-                      const std::vector<Zone *> zones);
+                      const T zones);
 
  public:
   std::mutex zone_resources_mtx_; /* Protects active/open io zones */
@@ -208,15 +210,30 @@ class ZonedBlockDevice {
 
   Zone *GetIOZone(uint64_t offset);
 
-  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
-  Zone *AllocateDataZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
+  // Jump to AllocateDataZone in this test branch.
+  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool high_pri);
+
+  /* Allocate a data zone from active zone vector.
+   * High priority requests are able to utilize extra reservation zones for
+   * lower latency.
+   * Low priority requests shall wait until there is no high priority requests,
+   * then get a data zone aside reservation zones.
+   * When no available zones to allocate, nullptr will returned. 
+   */
+  Zone *AllocateDataZone(Env::WriteLifeTimeHint lifetime, bool high_pri);
   Zone *AllocateMetaZone();
 
-  Zone *GetDataZoneLocked(int start);
-  
-  // Submit a background job to refill active zone vector.
-  void BgRefillActiveZones();
-  void BgReplaceFromIOZones(int index);
+  /* Submit a background job to replace read only zones in active zone vector.
+   * with resources.
+   * Function called when one active zone is turned into read only state.
+   */
+  void BgReplaceReadOnlyZones();
+
+  /* Tool function of BgReplaceReadOnlyZones().
+   * Get a suitable zone from io_zones to replace read only zone in active zone vector.
+   * Nullptr is returned when no resource available.
+   */
+  Zone* BgGetIOZoneToWrite();
   void BgResetDataZone(Zone* target);
   
   uint64_t GetFreeSpace();
