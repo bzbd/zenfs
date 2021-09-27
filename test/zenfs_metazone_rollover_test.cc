@@ -45,17 +45,17 @@ int test_snapshot_zone_allocation() {
   ZonedBlockDevice *zbd = zbd_open(false, logger);
   if (zbd == nullptr) return 1;
 
-  auto meta_snapshot_zones = zbd->GetMetaSnapshotZones();
+  auto snapshot_zones = zbd->GetSnapshotZones();
   
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   const int zenfs_snapshot_zones_num = 2;
-  if (meta_snapshot_zones.size() != zenfs_snapshot_zones_num) {
-    fprintf(stderr, "Error! Failed to allocate meta snapshot zone");
+  if (snapshot_zones.size() != zenfs_snapshot_zones_num) {
+    fprintf(stderr, "Error! Failed to allocate snapshot zone");
     return 1;
   }
 #else
-  if (meta_snapshot_zones.size() == 0) {
-    std::cout << "Success! Did not allocate meta snapshot zone\n";
+  if (snapshot_zones.size() == 0) {
+    std::cout << "Success! Did not allocate snapshot zone\n";
     return 0;
   }
 #endif

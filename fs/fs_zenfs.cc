@@ -1034,8 +1034,11 @@ Status ZenFS::Mount(bool readonly) {
 Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
                    uint32_t max_open_limit, uint32_t max_active_limit) {
   std::vector<Zone*> metazones = zbd_->GetMetaZones();
-  std::unique_ptr<ZenMetaLog> log;
+  std::vector<Zone*> snapshot_zones = zbd_->GetSnapshotZones();
+  std::unique_ptr<ZenMetaLog> metadata_log;
+  std::unique_ptr<ZenMetaLog> snapshot_log;
   Zone* meta_zone = nullptr;
+  Zone* snapshot_zone = nullptr;
   IOStatus s;
 
   /* TODO: check practical limits */
@@ -1074,19 +1077,42 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
   if (!meta_zone) {
     return Status::IOError("No available meta zones\n");
   }
+  metadata_log.reset(new ZenMetaLog(zbd_, meta_zone));
 
-  log.reset(new ZenMetaLog(zbd_, meta_zone));
-
-  Superblock* super = new Superblock(zbd_, aux_fs_path, finish_threshold,
+  Superblock* metadata_super = new Superblock(zbd_, aux_fs_path, finish_threshold,
                                      max_open_limit, max_active_limit);
-  std::string super_string;
-  super->EncodeTo(&super_string);
+  std::string metadata_super_string;
+  metadata_super->EncodeTo(&metadata_super_string);
 
-  s = log->AddRecord(super_string);
+  // write an empty superblock to meta zone
+  s = metadata_log->AddRecord(metadata_super_string);
   if (!s.ok()) return std::move(s);
 
-  /* Write an empty snapshot to make the metadata zone valid */
-  s = PersistSnapshot(log.get());
+  for (const auto sz: snapshot_zones) {
+    if (sz->Reset().ok()) {
+      if (!sz) snapshot_zone = sz;
+    } else {
+      Warn(logger_, "Failed to reset snapshot zone\n");
+    }
+  }
+
+  if (!snapshot_zone) {
+    return Status::IOError("No available snapshot zones\n");
+  }
+
+  snapshot_log.reset(new ZenMetaLog(zbd_, snapshot_zone));
+
+  Superblock* snapshot_super = new Superblock(zbd_, aux_fs_path, finish_threshold,
+                                     max_open_limit, max_active_limit);
+  std::string snapshot_super_string;
+  snapshot_super->EncodeTo(&snapshot_super_string);
+
+  // write an empty superblock to snapshot zone
+  s = snapshot_log->AddRecord(snapshot_super_string);
+  if (!s.ok()) return std::move(s);
+
+  /* Write an empty snapshot to make the snapshot zone valid */
+  s = PersistSnapshot(snapshot_log.get());
   if (!s.ok()) {
     Error(logger_, "Failed to persist snapshot: %s", s.ToString().c_str());
     return Status::IOError("Failed persist snapshot");

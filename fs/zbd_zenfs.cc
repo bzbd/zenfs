@@ -540,7 +540,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
     /* Only use sequential write required zones */
     if (zbd_zone_type(z) == ZBD_ZONE_TYPE_SWR) {
       if (!zbd_zone_offline(z)) {
-        meta_snapshot_zones.push_back(new Zone(this, z));
+        snapshot_zones.push_back(new Zone(this, z));
       }
       snapshot_zones_num++;
     }
@@ -655,7 +655,7 @@ ZonedBlockDevice::~ZonedBlockDevice() {
   }
 
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
-  for (const auto z : meta_snapshot_zones) {
+  for (const auto z : snapshot_zones) {
     delete z;
   }
 #endif
@@ -942,7 +942,7 @@ void ZonedBlockDevice::EncodeJson(std::ostream &json_stream) {
   EncodeJsonZone(json_stream, meta_zones);
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   json_stream << "\"meta snapshot\":";
-  EncodeJsonZone(json_stream, meta_snapshot_zones);
+  EncodeJsonZone(json_stream, snapshot_zones);
 #endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   json_stream << ",\"io\":";
   EncodeJsonZone(json_stream, io_zones);
