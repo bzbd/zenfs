@@ -127,7 +127,8 @@ class ZenFS : public FileSystemWrapper {
   std::unique_ptr<ZenMetaLog> meta_log_;
   std::unique_ptr<ZenMetaLog> meta_snapshot_log_;
   std::mutex metadata_sync_mtx_;
-  std::unique_ptr<Superblock> superblock_;
+  std::unique_ptr<Superblock> snapshot_superblock_;
+  std::unique_ptr<Superblock> metadata_superblock_;
 
   std::shared_ptr<Logger> GetLogger() { return logger_; }
 
@@ -171,12 +172,12 @@ class ZenFS : public FileSystemWrapper {
   Status RecoverFrom(ZenMetaLog* log);
 
   std::string ToAuxPath(std::string path) {
-    return superblock_->GetAuxFsPath() + path;
+    return metadata_superblock_->GetAuxFsPath() + path;
   }
 
   std::string ToZenFSPath(std::string aux_path) {
     std::string path = aux_path;
-    path.erase(0, superblock_->GetAuxFsPath().length());
+    path.erase(0, metadata_superblock_->GetAuxFsPath().length());
     return path;
   }
 
