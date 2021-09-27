@@ -1090,7 +1090,7 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
 
   for (const auto sz: snapshot_zones) {
     if (sz->Reset().ok()) {
-      if (!sz) snapshot_zone = sz;
+      if (!snapshot_zone) snapshot_zone = sz;
     } else {
       Warn(logger_, "Failed to reset snapshot zone\n");
     }

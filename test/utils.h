@@ -22,6 +22,15 @@ using GFLAGS_NAMESPACE::RegisterFlagValidator;
 using GFLAGS_NAMESPACE::SetUsageMessage;
 
 DEFINE_string(zbd, "", "Path to a zoned block device.");
+DEFINE_string(aux_path, "",
+"Path for auxiliary file storage (log and lock files).");
+DEFINE_bool(force, false, "Force file system creation.");
+DEFINE_string(path, "", "File path");
+DEFINE_int32(finish_threshold, 0, "Finish used zones if less than x% left");
+DEFINE_string(restore_path, "", "Path to restore files");
+DEFINE_string(backup_path, "", "Path to backup files");
+DEFINE_int32(max_active_zones, 0, "Max active zone limit");
+DEFINE_int32(max_open_zones, 0, "Max active zone limit");
 
 bool find_sub_string(std::string const& inputString, std::string const& subString) {
   std::size_t found = inputString.find(subString);
