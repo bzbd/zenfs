@@ -823,6 +823,149 @@ Status ZenFS::DecodeFileDeletionFrom(Slice* input) {
   return Status::OK();
 }
 
+/* find the latest valid snapshot record */
+Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
+  bool found_one_snapshot = false;
+  std::string scratch;
+  uint32_t tag = 0;
+  Slice record;
+  Slice data;
+  Status s;
+  bool done = false;
+
+  while (!done) {
+    IOStatus rs = log->ReadRecord(&record, &scratch);
+    if (!rs.ok()) {
+      Error(logger_, "Read recovery record failed with error: %s",
+            rs.ToString().c_str());
+      return Status::Corruption("ZenFS", "Metadata corruption");
+    }
+
+    if (!GetFixed32(&record, &tag)) break;
+
+    if (tag == kEndRecord) break;
+
+    if (!GetLengthPrefixedSlice(&record, &data)) {
+      return Status::Corruption("ZenFS", "No recovery record data");
+    }
+
+    switch (tag) {
+      case kCompleteFilesSnapshot:
+        ClearFiles();
+        s = DecodeSnapshotFrom(&data);
+        if (!s.ok()) {
+          Warn(logger_, "Could not decode complete snapshot: %s",
+               s.ToString().c_str());
+          return s;
+        }
+        // found one snapshot record, and
+        // continue to find the latest valid snapshot record
+        found_one_snapshot = true;
+        continue;
+
+      /* TODO: do we need kFileUpdate and kFileDeletion for snapshot recovery ? */
+      case kFileUpdate:
+        s = DecodeFileUpdateFrom(&data);
+        if (!s.ok()) {
+          Warn(logger_, "Could not decode file snapshot: %s",
+               s.ToString().c_str());
+          return s;
+        }
+        continue;
+
+      case kFileDeletion:
+        s = DecodeFileDeletionFrom(&data);
+        if (!s.ok()) {
+          Warn(logger_, "Could not decode file deletion: %s",
+               s.ToString().c_str());
+          return s;
+        }
+        continue;
+
+      default:
+        Warn(logger_, "Unexpected snapshot record tag: %u", tag);
+        return Status::Corruption("ZenFS", "Unexpected tag");
+    }
+  }
+
+  if (found_one_snapshot)
+    return Status::OK();
+  else
+    return Status::NotFound("ZenFS", "No snapshot found");
+}
+
+/* find the latest meta log */
+Status ZenFS::RecoverFromMetaZone(ZenMetaLog* log) {
+  bool found_one_metadata = false;
+  std::string scratch;
+  uint32_t tag = 0;
+  Slice record;
+  Slice data;
+  Status s;
+  bool done = false;
+
+  while (!done) {
+    IOStatus rs = log->ReadRecord(&record, &scratch);
+    if (!rs.ok()) {
+      Error(logger_, "Read recovery record failed with error: %s",
+            rs.ToString().c_str());
+      return Status::Corruption("ZenFS", "Metadata corruption");
+    }
+
+    if (!GetFixed32(&record, &tag)) break;
+
+    if (tag == kEndRecord) break;
+
+    if (!GetLengthPrefixedSlice(&record, &data)) {
+      return Status::Corruption("ZenFS", "No recovery record data");
+    }
+
+    switch (tag) {
+      /* TODO: for metazone recovery, if we run into kCompleteFilesSnapshot,
+       TODO: we should throw error, right? */
+      // case kCompleteFilesSnapshot:
+      //   ClearFiles();
+      //   s = DecodeSnapshotFrom(&data);
+      //   if (!s.ok()) {
+      //     Warn(logger_, "Could not decode complete snapshot: %s",
+      //          s.ToString().c_str());
+      //     return s;
+      //   }
+      //   at_least_one_snapshot = true;
+      //   break;
+
+      case kFileUpdate:
+        s = DecodeFileUpdateFrom(&data);
+        if (!s.ok()) {
+          Warn(logger_, "Could not decode file snapshot: %s",
+               s.ToString().c_str());
+          return s;
+        }
+        found_one_metadata = true;
+        continue;
+
+      case kFileDeletion:
+        s = DecodeFileDeletionFrom(&data);
+        if (!s.ok()) {
+          Warn(logger_, "Could not decode file deletion: %s",
+               s.ToString().c_str());
+          return s;
+        }
+        found_one_metadata = true;
+        continue;
+
+      default:
+        Warn(logger_, "Unexpected metadata record tag: %u", tag);
+        return Status::Corruption("ZenFS", "Unexpected tag");
+    }
+  }
+
+  if (found_one_metadata)
+    return Status::OK();
+  else
+    return Status::NotFound("ZenFS", "No metadata found");
+}
+
 Status ZenFS::RecoverFrom(ZenMetaLog* log) {
   bool at_least_one_snapshot = false;
   std::string scratch;
@@ -972,8 +1115,7 @@ Status ZenFS::Mount(bool readonly) {
     std::string scratch;
     std::unique_ptr<ZenMetaLog> log = std::move(valid_logs_snapshot[i]);
 
-    // TODO: recoverFromSnapshotZones
-    s = RecoverFrom(log.get());
+    s = RecoverFromSnapshotZone(log.get());
     if (!s.ok()) {
       if (s.IsNotFound()) {
         Warn(logger_,
@@ -1079,8 +1221,7 @@ Status ZenFS::Mount(bool readonly) {
     std::string scratch;
     std::unique_ptr<ZenMetaLog> log = std::move(valid_logs_metadata[i]);
 
-    // TODO: recoverFromMetadata
-    s = RecoverFrom(log.get());
+    s = RecoverFromMetaZone(log.get());
     if (!s.ok()) {
       if (s.IsNotFound()) {
         Warn(logger_,

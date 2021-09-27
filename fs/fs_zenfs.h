@@ -170,6 +170,8 @@ class ZenFS : public FileSystemWrapper {
   Status DecodeFileDeletionFrom(Slice* slice);
 
   Status RecoverFrom(ZenMetaLog* log);
+  Status RecoverFromSnapshotZone(ZenMetaLog* log);
+  Status RecoverFromMetaZone(ZenMetaLog* log);
 
   std::string ToAuxPath(std::string path) {
     return metadata_superblock_->GetAuxFsPath() + path;
