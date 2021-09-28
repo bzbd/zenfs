@@ -780,6 +780,7 @@ Status ZenFS::DecodeSnapshotFrom(Slice* input) {
     Status s = zoneFile->DecodeFrom(&slice);
     if (!s.ok()) return s;
 
+    // TODO: remove this part to snapshot loop
     files_.insert(std::make_pair(zoneFile->GetFilename(), zoneFile));
     if (zoneFile->GetID() >= next_file_id_)
       next_file_id_ = zoneFile->GetID() + 1;
@@ -863,25 +864,6 @@ Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
         found_one_snapshot = true;
         continue;
 
-      /* TODO: do we need kFileUpdate and kFileDeletion for snapshot recovery ? */
-      case kFileUpdate:
-        s = DecodeFileUpdateFrom(&data);
-        if (!s.ok()) {
-          Warn(logger_, "Could not decode file snapshot: %s",
-               s.ToString().c_str());
-          return s;
-        }
-        continue;
-
-      case kFileDeletion:
-        s = DecodeFileDeletionFrom(&data);
-        if (!s.ok()) {
-          Warn(logger_, "Could not decode file deletion: %s",
-               s.ToString().c_str());
-          return s;
-        }
-        continue;
-
       default:
         Warn(logger_, "Unexpected snapshot record tag: %u", tag);
         return Status::Corruption("ZenFS", "Unexpected tag");
@@ -921,19 +903,6 @@ Status ZenFS::RecoverFromMetaZone(ZenMetaLog* log) {
     }
 
     switch (tag) {
-      /* TODO: for metazone recovery, if we run into kCompleteFilesSnapshot,
-       TODO: we should throw error, right? */
-      // case kCompleteFilesSnapshot:
-      //   ClearFiles();
-      //   s = DecodeSnapshotFrom(&data);
-      //   if (!s.ok()) {
-      //     Warn(logger_, "Could not decode complete snapshot: %s",
-      //          s.ToString().c_str());
-      //     return s;
-      //   }
-      //   at_least_one_snapshot = true;
-      //   break;
-
       case kFileUpdate:
         s = DecodeFileUpdateFrom(&data);
         if (!s.ok()) {
@@ -1143,23 +1112,6 @@ Status ZenFS::Mount(bool readonly) {
          (int)valid_zones_snapshot[snapshot_recovered_index]->GetZoneNr());
   snapshot_superblock_ =
     std::move(valid_superblocks_snapshot[snapshot_recovered_index]);
-
-  // TODO: @Weile Wei think we only need to do the following steps
-  // TODO: from metadata_superblock_ since the setting are the same
-  // TODO: for both metazone and snapshot zones
-  /*
-   zbd_->SetFinishTreshold(snapshot_superblock_->GetFinishTreshold());
-   zbd_->SetMaxActiveZones(snapshot_superblock_->GetMaxActiveZoneLimit());
-   zbd_->SetMaxOpenZones(snapshot_superblock_->GetMaxOpenZoneLimit());
-
-   IOOptions foo;
-   IODebugContext bar;
-   s = target()->CreateDirIfMissing(snapshot_superblock_->GetAuxFsPath(), foo, &bar);
-   if (!s.ok()) {
-     Error(logger_, "Failed to create aux filesystem directory.");
-     return s;
-   }
-  */
 
   /* Free up old metadata zones, to get ready to roll */
   for (const auto& sm : seq_map_snapshot) {
