@@ -788,21 +788,10 @@ Status ZenFS::DecodeSnapshotFrom(Slice* input) {
   return Status::OK();
 }
 
-Status ZenFS::DecodeSnapshotFromV2(Slice* input) {
-  Slice slice;
-
-  assert(files_.size() == 0);
-
-  while (GetLengthPrefixedSlice(input, &slice)) {
-    ZoneFile* zoneFile = new ZoneFile(zbd_, "not_set", 0, logger_);
-    Status s = zoneFile->DecodeFrom(&slice);
-    if (!s.ok()) return s;
-  }
-
-  return Status::OK();
-}
-
-Status ZenFS::CacheFilesFromSnapshot(Slice* input) {
+/* This function only read through slices in a snapshot record and
+ * DO NOT add valid slices to files_ to avoid duplicating files
+ * appeared in different snapshots*/
+Status ZenFS::DecodeSnapshotFromAndNoCacheFiles(Slice* input) {
   Slice slice;
 
   assert(files_.size() == 0);
@@ -881,7 +870,7 @@ Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
     switch (tag) {
       case kCompleteFilesSnapshot:
         ClearFiles();
-        s = DecodeSnapshotFromV2(&data);
+        s = DecodeSnapshotFromAndNoCacheFiles(&data);
         if (!s.ok()) {
           Warn(logger_, "Could not decode complete snapshot: %s",
                s.ToString().c_str());
@@ -900,12 +889,18 @@ Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
   }
 
   if (found_one_snapshot) {
-    CacheFilesFromSnapshot(&last_valid_snapshot_record);
+    // decode snapshot and cache files
+    s = DecodeSnapshotFrom(&last_valid_snapshot_record);
+
+    if (!s.ok()) {
+      Warn(logger_, "Could not decode complete snapshot: %s",
+           s.ToString().c_str());
+      return s;
+    }
     return Status::OK();
   }
-  else {
-    return Status::NotFound("ZenFS", "No snapshot found");
-  }
+
+  return Status::NotFound("ZenFS", "No snapshot found");
 }
 
 /* find the latest meta log */
