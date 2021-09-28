@@ -782,7 +782,7 @@ Status ZenFS::DecodeSnapshotFrom(Slice* input) {
 
     files_.insert(std::make_pair(zoneFile->GetFilename(), zoneFile));
     if (zoneFile->GetID() >= next_file_id_)
-       next_file_id_ = zoneFile->GetID() + 1;
+      next_file_id_ = zoneFile->GetID() + 1;
   }
 
   return Status::OK();
@@ -1123,14 +1123,14 @@ Status ZenFS::Mount(bool readonly) {
   }
 
   Info(logger_, "Recovered from zone: %d", (int)valid_zones[r]->GetZoneNr());
-  superblock_ = std::move(valid_superblocks[r]);
-  zbd_->SetFinishTreshold(superblock_->GetFinishTreshold());
-  zbd_->SetMaxActiveZones(superblock_->GetMaxActiveZoneLimit());
-  zbd_->SetMaxOpenZones(superblock_->GetMaxOpenZoneLimit());
+  metadata_superblock_ = std::move(valid_superblocks[r]);
+  zbd_->SetFinishTreshold(metadata_superblock_->GetFinishTreshold());
+  zbd_->SetMaxActiveZones(metadata_superblock_->GetMaxActiveZoneLimit());
+  zbd_->SetMaxOpenZones(metadata_superblock_->GetMaxOpenZoneLimit());
 
   IOOptions foo;
   IODebugContext bar;
-  s = target()->CreateDirIfMissing(superblock_->GetAuxFsPath(), foo, &bar);
+  s = target()->CreateDirIfMissing(metadata_superblock_->GetAuxFsPath(), foo, &bar);
   if (!s.ok()) {
     Error(logger_, "Failed to create aux filesystem directory.");
     return s;
@@ -1160,8 +1160,8 @@ Status ZenFS::Mount(bool readonly) {
     files_mtx_.unlock();
   }
 
-  Info(logger_, "Superblock sequence %d", (int)superblock_->GetSeq());
-  Info(logger_, "Finish threshold %u", superblock_->GetFinishTreshold());
+  Info(logger_, "Superblock sequence %d", (int)metadata_superblock_->GetSeq());
+  Info(logger_, "Finish threshold %u", metadata_superblock_->GetFinishTreshold());
   Info(logger_, "Filesystem mount OK");
 
   if (!readonly) {
