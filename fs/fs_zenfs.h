@@ -166,6 +166,7 @@ class ZenFS : public FileSystemWrapper {
   void EncodeFileDeletionTo(ZoneFile* zoneFile, std::string* output);
 
   Status DecodeSnapshotFrom(Slice* input);
+  Status DecodeSnapshotFromV2(Slice* input);
   Status CacheFilesFromSnapshot(Slice* input);
   Status DecodeFileUpdateFrom(Slice* slice);
   Status DecodeFileDeletionFrom(Slice* slice);

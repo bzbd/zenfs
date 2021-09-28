@@ -779,6 +779,24 @@ Status ZenFS::DecodeSnapshotFrom(Slice* input) {
     ZoneFile* zoneFile = new ZoneFile(zbd_, "not_set", 0, logger_);
     Status s = zoneFile->DecodeFrom(&slice);
     if (!s.ok()) return s;
+
+    files_.insert(std::make_pair(zoneFile->GetFilename(), zoneFile));
+    if (zoneFile->GetID() >= next_file_id_)
+       next_file_id_ = zoneFile->GetID() + 1;
+  }
+
+  return Status::OK();
+}
+
+Status ZenFS::DecodeSnapshotFromV2(Slice* input) {
+  Slice slice;
+
+  assert(files_.size() == 0);
+
+  while (GetLengthPrefixedSlice(input, &slice)) {
+    ZoneFile* zoneFile = new ZoneFile(zbd_, "not_set", 0, logger_);
+    Status s = zoneFile->DecodeFrom(&slice);
+    if (!s.ok()) return s;
   }
 
   return Status::OK();
@@ -863,7 +881,7 @@ Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
     switch (tag) {
       case kCompleteFilesSnapshot:
         ClearFiles();
-        s = DecodeSnapshotFrom(&data);
+        s = DecodeSnapshotFromV2(&data);
         if (!s.ok()) {
           Warn(logger_, "Could not decode complete snapshot: %s",
                s.ToString().c_str());
