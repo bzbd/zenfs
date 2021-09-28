@@ -1423,6 +1423,72 @@ Status ZenFS::MountV2(bool readonly) {
 Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
                    uint32_t max_open_limit, uint32_t max_active_limit) {
   std::vector<Zone*> metazones = zbd_->GetMetaZones();
+  std::unique_ptr<ZenMetaLog> log;
+  Zone* meta_zone = nullptr;
+  IOStatus s;
+
+  /* TODO: check practical limits */
+
+  if (max_open_limit > zbd_->GetMaxOpenZones()) {
+    return Status::InvalidArgument(
+        "Max open zone limit exceeds the device limit\n");
+  }
+
+  if (max_active_limit > zbd_->GetMaxActiveZones()) {
+    return Status::InvalidArgument(
+        "Max active zone limit exceeds the device limit\n");
+  }
+
+  if (max_active_limit < max_open_limit) {
+    return Status::InvalidArgument(
+        "Max open limit must be smaller than max active limit\n");
+  }
+
+  if (aux_fs_path.length() > 255) {
+    return Status::InvalidArgument(
+        "Aux filesystem path must be less than 256 bytes\n");
+  }
+
+  ClearFiles();
+  zbd_->ResetUnusedIOZones();
+
+  for (const auto mz : metazones) {
+    if (mz->Reset().ok()) {
+      if (!meta_zone) meta_zone = mz;
+    } else {
+      Warn(logger_, "Failed to reset meta zone\n");
+    }
+  }
+
+  if (!meta_zone) {
+    return Status::IOError("No available meta zones\n");
+  }
+
+  log.reset(new ZenMetaLog(zbd_, meta_zone));
+
+  Superblock* super = new Superblock(zbd_, aux_fs_path, finish_threshold,
+                                     max_open_limit, max_active_limit);
+  std::string super_string;
+  super->EncodeTo(&super_string);
+
+  s = log->AddRecord(super_string);
+  if (!s.ok()) return std::move(s);
+
+  /* Write an empty snapshot to make the metadata zone valid */
+  s = PersistSnapshot(log.get());
+  if (!s.ok()) {
+    Error(logger_, "Failed to persist snapshot: %s", s.ToString().c_str());
+    return Status::IOError("Failed persist snapshot");
+  }
+
+  Info(logger_, "Empty filesystem created");
+  return Status::OK();
+}
+
+
+Status ZenFS::MkFSV2(std::string aux_fs_path, uint32_t finish_threshold,
+                   uint32_t max_open_limit, uint32_t max_active_limit) {
+  std::vector<Zone*> metazones = zbd_->GetMetaZones();
   std::vector<Zone*> snapshot_zones = zbd_->GetSnapshotZones();
   std::unique_ptr<ZenMetaLog> metadata_log;
   std::unique_ptr<ZenMetaLog> snapshot_log;

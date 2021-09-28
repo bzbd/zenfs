@@ -197,6 +197,8 @@ class ZenFS : public FileSystemWrapper {
   Status MountV2(bool readonly);
   Status MkFS(std::string aux_fs_path, uint32_t finish_threshold,
               uint32_t max_open_limit, uint32_t max_active_limit);
+  Status MkFSV2(std::string aux_fs_path, uint32_t finish_threshold,
+              uint32_t max_open_limit, uint32_t max_active_limit);
   std::map<std::string, Env::WriteLifeTimeHint> GetWriteLifeTimeHints();
 
   const char* Name() const override {
