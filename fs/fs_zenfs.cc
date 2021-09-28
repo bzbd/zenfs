@@ -779,11 +779,20 @@ Status ZenFS::DecodeSnapshotFrom(Slice* input) {
     ZoneFile* zoneFile = new ZoneFile(zbd_, "not_set", 0, logger_);
     Status s = zoneFile->DecodeFrom(&slice);
     if (!s.ok()) return s;
+  }
 
-    // TODO: remove this part to snapshot loop
-    files_.insert(std::make_pair(zoneFile->GetFilename(), zoneFile));
-    if (zoneFile->GetID() >= next_file_id_)
-      next_file_id_ = zoneFile->GetID() + 1;
+  return Status::OK();
+}
+
+Status ZenFS::CacheFilesFromSnapshot(Slice* input) {
+  Slice slice;
+
+  assert(files_.size() == 0);
+
+  while (GetLengthPrefixedSlice(input, &slice)) {
+    ZoneFile* zoneFile = new ZoneFile(zbd_, "not_set", 0, logger_);
+    Status s = zoneFile->DecodeFrom(&slice);
+    if (!s.ok()) return s;
   }
 
   return Status::OK();
@@ -827,6 +836,7 @@ Status ZenFS::DecodeFileDeletionFrom(Slice* input) {
 /* find the latest valid snapshot record */
 Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
   bool found_one_snapshot = false;
+  Slice last_valid_snapshot_record;
   std::string scratch;
   uint32_t tag = 0;
   Slice record;
@@ -862,6 +872,7 @@ Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
         // found one snapshot record, and
         // continue to find the latest valid snapshot record
         found_one_snapshot = true;
+        last_valid_snapshot_record = data;
         continue;
 
       default:
@@ -870,10 +881,13 @@ Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
     }
   }
 
-  if (found_one_snapshot)
+  if (found_one_snapshot) {
+    CacheFilesFromSnapshot(&last_valid_snapshot_record);
     return Status::OK();
-  else
+  }
+  else {
     return Status::NotFound("ZenFS", "No snapshot found");
+  }
 }
 
 /* find the latest meta log */
@@ -1177,7 +1191,7 @@ Status ZenFS::Mount(bool readonly) {
     if (!s.ok()) {
       if (s.IsNotFound()) {
         Warn(logger_,
-             "Did not find a valid snapshot, trying next meta zone. Error: %s",
+             "Did not find a valid metadata, trying next meta zone. Error: %s",
              s.ToString().c_str());
         continue;
       }
@@ -1192,7 +1206,7 @@ Status ZenFS::Mount(bool readonly) {
     break;
   }
 
-  if (!metadata_recovered_index) {
+  if (!metadata_recovery_ok) {
     return Status::IOError("Failed to mount filesystem due to "
                            "metadata zone recovery");
   }
