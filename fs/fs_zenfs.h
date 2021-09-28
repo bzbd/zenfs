@@ -125,7 +125,7 @@ class ZenFS : public FileSystemWrapper {
 
   Zone* cur_meta_zone_ = nullptr;
   std::unique_ptr<ZenMetaLog> meta_log_;
-  std::unique_ptr<ZenMetaLog> meta_snapshot_log_;
+  std::unique_ptr<ZenMetaLog> snapshot_log_;
   std::mutex metadata_sync_mtx_;
   std::unique_ptr<Superblock> snapshot_superblock_;
   std::unique_ptr<Superblock> metadata_superblock_;
@@ -194,6 +194,7 @@ class ZenFS : public FileSystemWrapper {
   virtual ~ZenFS();
 
   Status Mount(bool readonly);
+  Status MountV2(bool readonly);
   Status MkFS(std::string aux_fs_path, uint32_t finish_threshold,
               uint32_t max_open_limit, uint32_t max_active_limit);
   std::map<std::string, Env::WriteLifeTimeHint> GetWriteLifeTimeHints();

@@ -228,7 +228,7 @@ ZenFS::~ZenFS() {
 
   meta_log_.reset(nullptr);
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
-  meta_snapshot_log_.reset(nullptr);
+  snapshot_log_.reset(nullptr);
 #endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   ClearFiles();
   delete zbd_;
@@ -1020,6 +1020,146 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 
 /* Mount the filesystem by recovering form the latest valid metadata zone */
 Status ZenFS::Mount(bool readonly) {
+  std::vector<Zone*> metazones = zbd_->GetMetaZones();
+  std::vector<std::unique_ptr<Superblock>> valid_superblocks;
+  std::vector<std::unique_ptr<ZenMetaLog>> valid_logs;
+  std::vector<Zone*> valid_zones;
+  std::vector<std::pair<uint32_t, uint32_t>> seq_map;
+
+  Status s;
+
+  /* We need a minimum of two non-offline meta data zones */
+  if (metazones.size() < 2) {
+    Error(logger_,
+          "Need at least two non-offline meta zones to open for write");
+    return Status::NotSupported();
+  }
+
+  /* Find all valid superblocks */
+  for (const auto z : metazones) {
+    std::unique_ptr<ZenMetaLog> log;
+    std::string scratch;
+    Slice super_record;
+
+    log.reset(new ZenMetaLog(zbd_, z));
+
+    if (!log->ReadRecord(&super_record, &scratch).ok()) continue;
+
+    if (super_record.size() == 0) continue;
+
+    std::unique_ptr<Superblock> super_block;
+
+    super_block.reset(new Superblock());
+    s = super_block->DecodeFrom(&super_record);
+    if (s.ok()) s = super_block->CompatibleWith(zbd_);
+    if (!s.ok()) return s;
+
+    Info(logger_, "Found OK superblock in zone %lu seq: %u\n", z->GetZoneNr(),
+         super_block->GetSeq());
+
+    seq_map.push_back(std::make_pair(super_block->GetSeq(), seq_map.size()));
+    valid_superblocks.push_back(std::move(super_block));
+    valid_logs.push_back(std::move(log));
+    valid_zones.push_back(z);
+  }
+
+  if (!seq_map.size()) return Status::NotFound("No valid superblock found");
+
+  /* Sort superblocks by descending sequence number */
+  std::sort(seq_map.begin(), seq_map.end(),
+            std::greater<std::pair<uint32_t, uint32_t>>());
+
+  bool recovery_ok = false;
+  unsigned int r = 0;
+
+  /* Recover from the zone with the highest superblock sequence number.
+     If that fails go to the previous as we might have crashed when rolling
+     metadata zone.
+  */
+  for (const auto& sm : seq_map) {
+    uint32_t i = sm.second;
+    std::string scratch;
+    std::unique_ptr<ZenMetaLog> log = std::move(valid_logs[i]);
+
+    s = RecoverFrom(log.get());
+    if (!s.ok()) {
+      if (s.IsNotFound()) {
+        Warn(logger_,
+             "Did not find a valid snapshot, trying next meta zone. Error: %s",
+             s.ToString().c_str());
+        continue;
+      }
+
+      Error(logger_, "Metadata corruption. Error: %s", s.ToString().c_str());
+      return s;
+    }
+
+    r = i;
+    recovery_ok = true;
+    meta_log_ = std::move(log);
+    break;
+  }
+
+  if (!recovery_ok) {
+    return Status::IOError("Failed to mount filesystem");
+  }
+
+  Info(logger_, "Recovered from zone: %d", (int)valid_zones[r]->GetZoneNr());
+  superblock_ = std::move(valid_superblocks[r]);
+  zbd_->SetFinishTreshold(superblock_->GetFinishTreshold());
+  zbd_->SetMaxActiveZones(superblock_->GetMaxActiveZoneLimit());
+  zbd_->SetMaxOpenZones(superblock_->GetMaxOpenZoneLimit());
+
+  IOOptions foo;
+  IODebugContext bar;
+  s = target()->CreateDirIfMissing(superblock_->GetAuxFsPath(), foo, &bar);
+  if (!s.ok()) {
+    Error(logger_, "Failed to create aux filesystem directory.");
+    return s;
+  }
+
+  /* Free up old metadata zones, to get ready to roll */
+  for (const auto& sm : seq_map) {
+    uint32_t i = sm.second;
+    /* Don't reset the current metadata zone */
+    if (i != r) {
+      /* Metadata zones are not marked as having valid data, so they can be
+       * reset */
+      valid_logs[i].reset();
+    }
+  }
+
+  if (readonly) {
+    Info(logger_, "Mounting READ ONLY");
+  } else {
+    files_mtx_.lock();
+    s = RollMetaZone();
+    if (!s.ok()) {
+      files_mtx_.unlock();
+      Error(logger_, "Failed to roll metadata zone.");
+      return s;
+    }
+    files_mtx_.unlock();
+  }
+
+  Info(logger_, "Superblock sequence %d", (int)superblock_->GetSeq());
+  Info(logger_, "Finish threshold %u", superblock_->GetFinishTreshold());
+  Info(logger_, "Filesystem mount OK");
+
+  if (!readonly) {
+    Info(logger_, "Resetting unused IO Zones..");
+    zbd_->ResetUnusedIOZones();
+    Info(logger_, "  Done");
+  }
+
+  LogFiles();
+
+  return Status::OK();
+}
+
+/* Mount the filesystem by recovering form the latest valid snapshot zone
+ * and metadata zone*/
+Status ZenFS::MountV2(bool readonly) {
   std::vector<Zone*> snapshot_zones = zbd_->GetSnapshotZones();
   std::vector<Zone*> metazones = zbd_->GetMetaZones();
 
@@ -1102,18 +1242,18 @@ Status ZenFS::Mount(bool readonly) {
     if (!s.ok()) {
       if (s.IsNotFound()) {
         Warn(logger_,
-             "Did not find a valid snapshot, trying next meta zone. Error: %s",
-             s.ToString().c_str());
+             "Did not find a valid snapshot, trying next snapshot zone. "
+             "Error: %s", s.ToString().c_str());
         continue;
       }
 
-      Error(logger_, "Metadata corruption. Error: %s", s.ToString().c_str());
+      Error(logger_, "Snapshot corruption. Error: %s", s.ToString().c_str());
       return s;
     }
 
     snapshot_recovered_index = i;
     snapshot_recovery_ok = true;
-    meta_snapshot_log_ = std::move(log);
+    snapshot_log_ = std::move(log);
     break;
   }
 
@@ -1127,12 +1267,12 @@ Status ZenFS::Mount(bool readonly) {
   snapshot_superblock_ =
     std::move(valid_superblocks_snapshot[snapshot_recovered_index]);
 
-  /* Free up old metadata zones, to get ready to roll */
+  /* Free up old snapshot zones, to get ready to roll */
   for (const auto& sm : seq_map_snapshot) {
     uint32_t i = sm.second;
-    /* Don't reset the current metadata zone */
+    /* Don't reset the current snapshot zone */
     if (i != snapshot_recovered_index) {
-      /* Metadata zones are not marked as having valid data, so they can be
+      /* snapshot zones are not marked as having valid data, so they can be
        * reset */
       valid_logs_snapshot[i].reset();
     }
