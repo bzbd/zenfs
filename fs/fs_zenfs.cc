@@ -1031,6 +1031,7 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 
 #define ZENV_URI_PATTERN "zenfs://"
 
+/* find all valid superblocks for snapshot or op log zones */
 Status ZenFS::FindAllValidSuperblocks(std::vector<Zone*> const & zones,
     std::vector<std::unique_ptr<Superblock>>& valid_superblocks,
     std::vector<std::unique_ptr<ZenMetaLog>>& valid_logs,
@@ -1105,20 +1106,6 @@ Status ZenFS::Mount(bool readonly) {
     return s;
   }
 
-  std::vector<Zone*> op_zones = zbd_->GetOpZones();
-  std::vector<std::unique_ptr<Superblock>> valid_superblocks_metadata;
-  std::vector<std::unique_ptr<ZenMetaLog>> valid_logs_metadata;
-  std::vector<Zone*> valid_zones_metadata;
-  std::vector<std::pair<uint32_t, uint32_t>> seq_map_metadata;
-
-  s = FindAllValidSuperblocks(op_zones, valid_superblocks_metadata,
-      valid_logs_metadata, valid_zones_metadata, seq_map_metadata);
-  if (!s.ok()) {
-    Error(logger_, "Did not find valid superblock in Op Log zones. Error: %s",
-        s.ToString().c_str());
-    return s;
-  }
-
   bool snapshot_recovery_ok = false;
   unsigned int snapshot_recovered_index = 0;
 
@@ -1173,6 +1160,20 @@ Status ZenFS::Mount(bool readonly) {
 
 #endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
 
+  std::vector<Zone*> op_zones = zbd_->GetOpZones();
+  std::vector<std::unique_ptr<Superblock>> valid_superblocks_op;
+  std::vector<std::unique_ptr<ZenMetaLog>> valid_logs_op;
+  std::vector<Zone*> valid_zones_metadata;
+  std::vector<std::pair<uint32_t, uint32_t>> seq_map_op;
+
+  s = FindAllValidSuperblocks(op_zones, valid_superblocks_op,
+      valid_logs_op, valid_zones_metadata, seq_map_op);
+  if (!s.ok()) {
+    Error(logger_, "Did not find valid superblock in Op Log zones. Error: %s",
+        s.ToString().c_str());
+    return s;
+  }
+
   bool metadata_recovery_ok = false;
   unsigned int metadata_recovered_index = 0;
 
@@ -1180,12 +1181,17 @@ Status ZenFS::Mount(bool readonly) {
      If that fails go to the previous as we might have crashed when rolling
      metadata zone.
   */
-  for (const auto& sm : seq_map_metadata) {
+  for (const auto& sm : seq_map_op) {
     uint32_t i = sm.second;
     std::string scratch;
-    std::unique_ptr<ZenMetaLog> log = std::move(valid_logs_metadata[i]);
+    std::unique_ptr<ZenMetaLog> log = std::move(valid_logs_op[i]);
 
+#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
     s = RecoverFromOpLogZone(log.get());
+#else
+    s = RecoverFrom(log.get());
+#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+
     if (!s.ok()) {
       if (s.IsNotFound()) {
         Warn(logger_,
@@ -1211,8 +1217,7 @@ Status ZenFS::Mount(bool readonly) {
 
   Info(logger_, "Recovered from zone: %d",
              (int)valid_zones_metadata[metadata_recovered_index]->GetZoneNr());
-  op_super_block_ =
-    std::move(valid_superblocks_metadata[metadata_recovered_index]);
+  op_super_block_ = std::move(valid_superblocks_op[metadata_recovered_index]);
 
   zbd_->SetFinishTreshold(op_super_block_->GetFinishTreshold());
   zbd_->SetMaxActiveZones(op_super_block_->GetMaxActiveZoneLimit());
@@ -1227,14 +1232,14 @@ Status ZenFS::Mount(bool readonly) {
     return s;
   }
 
-  /* Free up old metadata zones, to get ready to roll */
-  for (const auto& sm : seq_map_metadata) {
+  /* Free up old op log zones, to get ready to roll */
+  for (const auto& sm : seq_map_op) {
     uint32_t i = sm.second;
-    /* Don't reset the current metadata zone */
+    /* Don't reset the current op log zone */
     if (i != metadata_recovered_index) {
-      /* Metadata zones are not marked as having valid data, so they can be
+      /* op log zones are not marked as having valid data, so they can be
        * reset */
-      valid_logs_metadata[i].reset();
+      valid_logs_op[i].reset();
     }
   }
 
@@ -1362,7 +1367,7 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
     return Status::IOError("Failed to reset metadata");
   }
 
-#ifndef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+#if !defined(WITH_ZENFS_ASYNC_METAZONE_ROLLOVER)
   /* Write an empty snapshot to make the metadata zone valid */
   s = PersistSnapshot(op_log.get());
   if (!s.ok()) {
