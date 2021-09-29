@@ -158,7 +158,7 @@ class ZonedBlockDevice {
   std::mutex io_zones_mtx;
   std::mutex wal_zones_mtx;
   // meta log zones used to keep track of running record of metadata
-  std::vector<Zone *> meta_zones;
+  std::vector<Zone *> op_zones;
   // snapshot zones used to recover entire file system
   std::vector<Zone *> snapshot_zones;
   int read_f_;
@@ -233,7 +233,7 @@ class ZonedBlockDevice {
   uint32_t GetMaxActiveZones() { return max_nr_active_io_zones_ + 1; };
   uint32_t GetMaxOpenZones() { return max_nr_open_io_zones_ + 1; };
 
-  std::vector<Zone *> GetMetaZones() { return meta_zones; }
+  std::vector<Zone *> GetOpZones() { return op_zones; }
   std::vector<Zone *> GetSnapshotZones() { return snapshot_zones; }
 
   void SetFinishTreshold(uint32_t threshold) { finish_threshold_ = threshold; }

@@ -527,7 +527,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
     /* Only use sequential write required zones */
     if (zbd_zone_type(z) == ZBD_ZONE_TYPE_SWR) {
       if (!zbd_zone_offline(z)) {
-        meta_zones.push_back(new Zone(this, z));
+        op_zones.push_back(new Zone(this, z));
       }
       m++;
     }
@@ -650,7 +650,7 @@ void ZonedBlockDevice::LogZoneUsage() {
 }
 
 ZonedBlockDevice::~ZonedBlockDevice() {
-  for (const auto z : meta_zones) {
+  for (const auto z : op_zones) {
     delete z;
   }
 
@@ -697,7 +697,7 @@ Zone *ZonedBlockDevice::AllocateMetaZone() {
   // Wait till there is an empty metazone
   std::unique_lock<std::mutex> lk(metazone_reset_mtx_);
   metazone_reset_cv_.wait(lk, [&] {
-    for (const auto z : meta_zones) {
+    for (const auto z : op_zones) {
       if (!z->IsUsed() && z->IsEmpty()) {
         return true;
       }
@@ -705,7 +705,7 @@ Zone *ZonedBlockDevice::AllocateMetaZone() {
   });
 
   // TODO(guokuankuan) we don't have to do the resetting here anymore
-  for (const auto z : meta_zones) {
+  for (const auto z : op_zones) {
     /* If the zone is not used, reset and use it */
     if (!z->IsUsed()) {
       if (!z->IsEmpty()) {
@@ -939,7 +939,7 @@ void ZonedBlockDevice::EncodeJsonZone(std::ostream &json_stream,
 void ZonedBlockDevice::EncodeJson(std::ostream &json_stream) {
   json_stream << "{";
   json_stream << "\"meta\":";
-  EncodeJsonZone(json_stream, meta_zones);
+  EncodeJsonZone(json_stream, op_zones);
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   json_stream << "\"meta snapshot\":";
   EncodeJsonZone(json_stream, snapshot_zones);

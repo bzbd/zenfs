@@ -226,7 +226,7 @@ ZenFS::~ZenFS() {
   zbd_->LogZoneUsage();
   LogFiles();
 
-  meta_log_.reset(nullptr);
+  op_log_.reset(nullptr);
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   snapshot_log_.reset(nullptr);
 #endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
@@ -325,26 +325,26 @@ IOStatus ZenFS::RollMetaZoneLocked() {
 
   Info(logger_, "Rolling to metazone %d\n", (int)new_meta_zone->GetZoneNr());
   new_meta_log = new ZenMetaLog(zbd_, new_meta_zone);
-  old_meta_zone = meta_log_->GetZone();
+  old_meta_zone = op_log_->GetZone();
   old_meta_zone->open_for_write_ = false;
 
   /* Write an end record and finish the meta data zone if there is space left */
-  if (old_meta_zone->GetCapacityLeft()) WriteEndRecord(meta_log_.get());
+  if (old_meta_zone->GetCapacityLeft()) WriteEndRecord(op_log_.get());
   if (old_meta_zone->GetCapacityLeft()) old_meta_zone->Finish();
 
-  meta_log_.reset(new_meta_log);
+  op_log_.reset(new_meta_log);
 
   std::string super_string;
-  metadata_superblock_->EncodeTo(&super_string);
+  op_super_block_->EncodeTo(&super_string);
 
-  s = meta_log_->AddRecord(super_string);
+  s = op_log_->AddRecord(super_string);
   if (!s.ok()) {
     Error(logger_,
           "Could not write super block when rolling to a new meta zone");
     return IOStatus::IOError("Failed writing a new superblock");
   }
 
-  s = WriteSnapshotLocked(meta_log_.get());
+  s = WriteSnapshotLocked(op_log_.get());
 
   /* We've rolled successfully, we can reset the old zone now */
   if (s.ok()) {
@@ -357,7 +357,7 @@ IOStatus ZenFS::RollMetaZoneLocked() {
   }
 
   auto new_meta_zone_size =
-      meta_log_->GetZone()->wp_ - meta_log_->GetZone()->start_;
+      op_log_->GetZone()->wp_ - op_log_->GetZone()->start_;
   Info(logger_, "Size of new meta zone %ld\n", new_meta_zone_size);
 
   zbd_->roll_throughput_reporter_.AddCount(new_meta_zone_size);
@@ -391,7 +391,7 @@ IOStatus ZenFS::PersistRecord(std::string record) {
   IOStatus s;
 
   metadata_sync_mtx_.lock();
-  s = meta_log_->AddRecord(record);
+  s = op_log_->AddRecord(record);
   if (s == IOStatus::NoSpace()) {
     Info(logger_, "Current meta zone full, rolling to next meta zone");
     s = RollMetaZone();
@@ -1033,7 +1033,7 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 
 /* Mount the filesystem by recovering form the latest valid metadata zone */
 Status ZenFS::Mount(bool readonly) {
-  std::vector<Zone*> metazones = zbd_->GetMetaZones();
+  std::vector<Zone*> op_zones = zbd_->GetOpZones();
   std::vector<std::unique_ptr<Superblock>> valid_superblocks;
   std::vector<std::unique_ptr<ZenMetaLog>> valid_logs;
   std::vector<Zone*> valid_zones;
@@ -1042,14 +1042,14 @@ Status ZenFS::Mount(bool readonly) {
   Status s;
 
   /* We need a minimum of two non-offline meta data zones */
-  if (metazones.size() < 2) {
+  if (op_zones.size() < 2) {
     Error(logger_,
           "Need at least two non-offline meta zones to open for write");
     return Status::NotSupported();
   }
 
   /* Find all valid superblocks */
-  for (const auto z : metazones) {
+  for (const auto z : op_zones) {
     std::unique_ptr<ZenMetaLog> log;
     std::string scratch;
     Slice super_record;
@@ -1109,7 +1109,7 @@ Status ZenFS::Mount(bool readonly) {
 
     r = i;
     recovery_ok = true;
-    meta_log_ = std::move(log);
+    op_log_ = std::move(log);
     break;
   }
 
@@ -1118,14 +1118,14 @@ Status ZenFS::Mount(bool readonly) {
   }
 
   Info(logger_, "Recovered from zone: %d", (int)valid_zones[r]->GetZoneNr());
-  metadata_superblock_ = std::move(valid_superblocks[r]);
-  zbd_->SetFinishTreshold(metadata_superblock_->GetFinishTreshold());
-  zbd_->SetMaxActiveZones(metadata_superblock_->GetMaxActiveZoneLimit());
-  zbd_->SetMaxOpenZones(metadata_superblock_->GetMaxOpenZoneLimit());
+  op_super_block_ = std::move(valid_superblocks[r]);
+  zbd_->SetFinishTreshold(op_super_block_->GetFinishTreshold());
+  zbd_->SetMaxActiveZones(op_super_block_->GetMaxActiveZoneLimit());
+  zbd_->SetMaxOpenZones(op_super_block_->GetMaxOpenZoneLimit());
 
   IOOptions foo;
   IODebugContext bar;
-  s = target()->CreateDirIfMissing(metadata_superblock_->GetAuxFsPath(), foo, &bar);
+  s = target()->CreateDirIfMissing(op_super_block_->GetAuxFsPath(), foo, &bar);
   if (!s.ok()) {
     Error(logger_, "Failed to create aux filesystem directory.");
     return s;
@@ -1155,8 +1155,8 @@ Status ZenFS::Mount(bool readonly) {
     files_mtx_.unlock();
   }
 
-  Info(logger_, "Superblock sequence %d", (int)metadata_superblock_->GetSeq());
-  Info(logger_, "Finish threshold %u", metadata_superblock_->GetFinishTreshold());
+  Info(logger_, "Superblock sequence %d", (int)op_super_block_->GetSeq());
+  Info(logger_, "Finish threshold %u", op_super_block_->GetFinishTreshold());
   Info(logger_, "Filesystem mount OK");
 
   if (!readonly) {
@@ -1174,7 +1174,7 @@ Status ZenFS::Mount(bool readonly) {
  * and metadata zone*/
 Status ZenFS::MountV2(bool readonly) {
   std::vector<Zone*> snapshot_zones = zbd_->GetSnapshotZones();
-  std::vector<Zone*> metazones = zbd_->GetMetaZones();
+  std::vector<Zone*> op_zones = zbd_->GetOpZones();
 
   std::vector<std::unique_ptr<Superblock>> valid_superblocks_snapshot;
   std::vector<std::unique_ptr<ZenMetaLog>> valid_logs_snapshot;
@@ -1196,7 +1196,7 @@ Status ZenFS::MountV2(bool readonly) {
   }
 
   /* We need a minimum of two non-offline meta data zones */
-  if (metazones.size() < 2) {
+  if (op_zones.size() < 2) {
     Error(logger_,
           "Need at least two non-offline meta zones to open for write");
     return Status::NotSupported();
@@ -1277,7 +1277,7 @@ Status ZenFS::MountV2(bool readonly) {
 
   Info(logger_, "Recovered from snapshot zone: %d",
          (int)valid_zones_snapshot[snapshot_recovered_index]->GetZoneNr());
-  snapshot_superblock_ =
+  snapshot_super_block_ =
     std::move(valid_superblocks_snapshot[snapshot_recovered_index]);
 
   /* Free up old snapshot zones, to get ready to roll */
@@ -1291,8 +1291,8 @@ Status ZenFS::MountV2(bool readonly) {
     }
   }
 
-  /* Find all valid superblocks in metazones*/
-  for (const auto z : metazones) {
+  /* Find all valid superblocks in op_zones*/
+  for (const auto z : op_zones) {
     std::unique_ptr<ZenMetaLog> log;
     std::string scratch;
     Slice super_record;
@@ -1355,7 +1355,7 @@ Status ZenFS::MountV2(bool readonly) {
 
     metadata_recovered_index = i;
     metadata_recovery_ok = true;
-    meta_log_ = std::move(log);
+    op_log_ = std::move(log);
     break;
   }
 
@@ -1366,15 +1366,15 @@ Status ZenFS::MountV2(bool readonly) {
 
   Info(logger_, "Recovered from zone: %d",
              (int)valid_zones_metadata[metadata_recovered_index]->GetZoneNr());
-  metadata_superblock_ =
+  op_super_block_ =
     std::move(valid_superblocks_metadata[metadata_recovered_index]);
-  zbd_->SetFinishTreshold(metadata_superblock_->GetFinishTreshold());
-  zbd_->SetMaxActiveZones(metadata_superblock_->GetMaxActiveZoneLimit());
-  zbd_->SetMaxOpenZones(metadata_superblock_->GetMaxOpenZoneLimit());
+  zbd_->SetFinishTreshold(op_super_block_->GetFinishTreshold());
+  zbd_->SetMaxActiveZones(op_super_block_->GetMaxActiveZoneLimit());
+  zbd_->SetMaxOpenZones(op_super_block_->GetMaxOpenZoneLimit());
 
   IOOptions foo;
   IODebugContext bar;
-  s = target()->CreateDirIfMissing(metadata_superblock_->GetAuxFsPath(),
+  s = target()->CreateDirIfMissing(op_super_block_->GetAuxFsPath(),
                                      foo, &bar);
   if (!s.ok()) {
     Error(logger_, "Failed to create aux filesystem directory.");
@@ -1405,8 +1405,8 @@ Status ZenFS::MountV2(bool readonly) {
     files_mtx_.unlock();
   }
 
-  Info(logger_, "Superblock sequence %d", (int)metadata_superblock_->GetSeq());
-  Info(logger_, "Finish threshold %u", metadata_superblock_->GetFinishTreshold());
+  Info(logger_, "Superblock sequence %d", (int)op_super_block_->GetSeq());
+  Info(logger_, "Finish threshold %u", op_super_block_->GetFinishTreshold());
   Info(logger_, "Filesystem mount OK");
 
   if (!readonly) {
@@ -1422,7 +1422,7 @@ Status ZenFS::MountV2(bool readonly) {
 
 Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
                    uint32_t max_open_limit, uint32_t max_active_limit) {
-  std::vector<Zone*> metazones = zbd_->GetMetaZones();
+  std::vector<Zone*> op_zones = zbd_->GetOpZones();
   std::unique_ptr<ZenMetaLog> log;
   Zone* meta_zone = nullptr;
   IOStatus s;
@@ -1452,7 +1452,7 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
   ClearFiles();
   zbd_->ResetUnusedIOZones();
 
-  for (const auto mz : metazones) {
+  for (const auto mz : op_zones) {
     if (mz->Reset().ok()) {
       if (!meta_zone) meta_zone = mz;
     } else {
@@ -1488,7 +1488,7 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
 
 Status ZenFS::MkFSV2(std::string aux_fs_path, uint32_t finish_threshold,
                    uint32_t max_open_limit, uint32_t max_active_limit) {
-  std::vector<Zone*> metazones = zbd_->GetMetaZones();
+  std::vector<Zone*> op_zones = zbd_->GetOpZones();
   std::vector<Zone*> snapshot_zones = zbd_->GetSnapshotZones();
   std::unique_ptr<ZenMetaLog> metadata_log;
   std::unique_ptr<ZenMetaLog> snapshot_log;
@@ -1521,7 +1521,7 @@ Status ZenFS::MkFSV2(std::string aux_fs_path, uint32_t finish_threshold,
   ClearFiles();
   zbd_->ResetUnusedIOZones();
 
-  for (const auto mz : metazones) {
+  for (const auto mz : op_zones) {
     if (mz->Reset().ok()) {
       if (!meta_zone) meta_zone = mz;
     } else {
@@ -1684,12 +1684,12 @@ std::map<std::string, std::string> ListZenFileSystems() {
       IOStatus zbd_status = zbd->Open(true);
 
       if (zbd_status.ok()) {
-        std::vector<Zone*> metazones = zbd->GetMetaZones();
+        std::vector<Zone*> op_zones = zbd->GetOpZones();
         std::string scratch;
         Slice super_record;
         Status s;
 
-        for (const auto z : metazones) {
+        for (const auto z : op_zones) {
           Superblock super_block;
           std::unique_ptr<ZenMetaLog> log;
           log.reset(new ZenMetaLog(zbd, z));
