@@ -188,13 +188,18 @@ class ZenFS : public FileSystemWrapper {
   ZoneFile* GetFile(std::string fname);
   IOStatus DeleteFile(std::string fname);
 
+  Status findAllValidSuperblocks(const std::vector<Zone*>& zones,
+    std::vector<std::unique_ptr<Superblock>>& valid_superblocks,
+    std::vector<std::unique_ptr<ZenMetaLog>>& valid_logs,
+    std::vector<Zone*>& valid_zones,
+    std::vector<std::pair<uint32_t, uint32_t>>& seq_map);
+
  public:
   explicit ZenFS(ZonedBlockDevice* zbd, std::shared_ptr<FileSystem> aux_fs,
                  std::shared_ptr<Logger> logger);
   virtual ~ZenFS();
 
   Status Mount(bool readonly);
-  Status MountV2(bool readonly);
   Status MkFS(std::string aux_fs_path, uint32_t finish_threshold,
               uint32_t max_open_limit, uint32_t max_active_limit);
   Status MkFSV2(std::string aux_fs_path, uint32_t finish_threshold,
