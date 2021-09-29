@@ -39,12 +39,12 @@
 #define ZENFS_DEBUG
 #include "utils.h"
 
-/* Number of reserved zones for metadata
- * Two non-offline meta zones are needed to be able
- * to roll the metadata log safely. One extra
+/* Number of reserved zones for op log
+ * Two non-offline op log zones are needed to be able
+ * to roll the log safely. One extra
  * is allocated to cover for one zone going offline.
  */
-#define ZENFS_META_ZONES (4)
+#define ZENFS_OP_LOG_ZONES (4)
 
 /* Number of reserved zones for metadata snapshot
  */
@@ -522,7 +522,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
     return IOStatus::IOError("Failed to list zones");
   }
 
-  while (m < ZENFS_META_ZONES && i < reported_zones) {
+  while (m < ZENFS_OP_LOG_ZONES && i < reported_zones) {
     struct zbd_zone *z = &zone_rep[i++];
     /* Only use sequential write required zones */
     if (zbd_zone_type(z) == ZBD_ZONE_TYPE_SWR) {

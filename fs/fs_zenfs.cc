@@ -904,7 +904,7 @@ Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
 }
 
 /* find the latest meta log */
-Status ZenFS::RecoverFromMetaZone(ZenMetaLog* log) {
+Status ZenFS::RecoverFromOpLogZone(ZenMetaLog* log) {
   bool found_one_metadata = false;
   std::string scratch;
   uint32_t tag = 0;
@@ -1340,7 +1340,7 @@ Status ZenFS::MountV2(bool readonly) {
     std::string scratch;
     std::unique_ptr<ZenMetaLog> log = std::move(valid_logs_metadata[i]);
 
-    s = RecoverFromMetaZone(log.get());
+    s = RecoverFromOpLogZone(log.get());
     if (!s.ok()) {
       if (s.IsNotFound()) {
         Warn(logger_,

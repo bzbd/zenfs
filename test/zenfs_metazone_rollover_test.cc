@@ -75,7 +75,9 @@ int test_mkfs() {
   ZenFS *zenFS;
   zenFS = new ZenFS(zbd, FileSystem::Default(), logger);
 
-  if (FLAGS_aux_path.back() != '/') FLAGS_aux_path.append("/");
+  if (FLAGS_aux_path.back() != '/') {
+    FLAGS_aux_path.append("/");
+  }
 
   s = zenFS->MkFSV2(FLAGS_aux_path, FLAGS_finish_threshold,
                   FLAGS_max_open_zones, FLAGS_max_active_zones);
