@@ -904,7 +904,7 @@ Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
 }
 
 /* find the latest meta log */
-Status ZenFS::RecoverFromMetaZone(ZenMetaLog* log) {
+Status ZenFS::RecoverFromOpLogZone(ZenMetaLog* log) {
   bool found_one_metadata = false;
   std::string scratch;
   uint32_t tag = 0;
@@ -1170,11 +1170,12 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 //  return Status::OK();
 //}
 
-Status findAllValidSuperblocks(const std::vector<Zone*>& zones,
+Status ZenFS::FindAllValidSuperblocks(const std::vector<Zone*>& zones,
     std::vector<std::unique_ptr<Superblock>>& valid_superblocks,
     std::vector<std::unique_ptr<ZenMetaLog>>& valid_logs,
     std::vector<Zone*>& valid_zones,
     std::vector<std::pair<uint32_t, uint32_t>>& seq_map) {
+  Status s;
 
   /* We need a minimum of two non-offline zones */
   if (zones.size() < 2) {
@@ -1240,7 +1241,7 @@ Status ZenFS::Mount(bool readonly) {
   std::vector<Zone*> valid_zones_metadata;
   std::vector<std::pair<uint32_t, uint32_t>> seq_map_metadata;
 
-  s = findAllValidSuperblocks(snapshot_zones, valid_superblocks_snapshot,
+  s = FindAllValidSuperblocks(snapshot_zones, valid_superblocks_snapshot,
       valid_logs_snapshot, valid_zones_snapshot, seq_map_snapshot);
   if (!s.ok()) {
     Error(logger_, "Did not find valid superblock in Snapshot zones. Error: %s",
@@ -1248,7 +1249,7 @@ Status ZenFS::Mount(bool readonly) {
     return s;
   }
 
-  s = findAllValidSuperblocks(op_zones, valid_superblocks_metadata,
+  s = FindAllValidSuperblocks(op_zones, valid_superblocks_metadata,
       valid_logs_metadata, valid_zones_metadata, seq_map_metadata);
   if (!s.ok()) {
     Error(logger_, "Did not find valid superblock in Op Log zones. Error: %s",
@@ -1357,7 +1358,7 @@ Status ZenFS::Mount(bool readonly) {
     std::string scratch;
     std::unique_ptr<ZenMetaLog> log = std::move(valid_logs_metadata[i]);
 
-    s = RecoverFromMetaZone(log.get());
+    s = RecoverFromOpLogZone(log.get());
     if (!s.ok()) {
       if (s.IsNotFound()) {
         Warn(logger_,
@@ -1706,7 +1707,7 @@ std::map<std::string, std::string> ListZenFileSystems() {
         Slice super_record;
         Status s;
 
-        for (const auto z : metazones) {
+        for (const auto z : op_zones) {
           Superblock super_block;
           std::unique_ptr<ZenMetaLog> log;
           log.reset(new ZenMetaLog(zbd, z));

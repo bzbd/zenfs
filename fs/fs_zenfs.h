@@ -188,7 +188,7 @@ class ZenFS : public FileSystemWrapper {
   ZoneFile* GetFile(std::string fname);
   IOStatus DeleteFile(std::string fname);
 
-  Status findAllValidSuperblocks(const std::vector<Zone*>& zones,
+  Status FindAllValidSuperblocks(const std::vector<Zone*>& zones,
     std::vector<std::unique_ptr<Superblock>>& valid_superblocks,
     std::vector<std::unique_ptr<ZenMetaLog>>& valid_logs,
     std::vector<Zone*>& valid_zones,
