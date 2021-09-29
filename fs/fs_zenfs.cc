@@ -284,7 +284,7 @@ IOStatus ZenFS::WriteSnapshotLocked(ZenMetaLog* meta_log) {
 }
 
 /* Assumes that files_mutex_ is held */
-IOStatus ZenFS::WriteSnapshotInSnapshotZone(ZenMetaLog* meta_snapshot_log) {
+IOStatus ZenFS::WriteSnapshot(ZenMetaLog* meta_snapshot_log) {
   // TODO: If space is not enough for another snapshot.
   IOStatus s;
   std::string snapshot;
@@ -319,72 +319,65 @@ IOStatus ZenFS::RollMetaZone() {
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
 /* Assumes the files_mtx_ is held */
 IOStatus ZenFS::RollMetaZoneAsync() {
-  ZenMetaLog* new_meta_log;
-  Zone *new_meta_zone, *old_meta_zone;
+  ZenMetaLog* new_op_log;
+  Zone *new_op_zone, *old_op_zone;
   IOStatus s;
   LatencyHistGuard guard(&zbd_->roll_latency_reporter_);
   zbd_->roll_qps_reporter_.AddCount(1);
 
-  new_meta_zone = zbd_->AllocateMetaZone();
+  new_op_zone = zbd_->AllocateMetaZone();
 
-  if (!new_meta_zone) {
+  if (!new_op_zone) {
     assert(false);  // TMP
-    Error(logger_, "Out of metadata zones, we should go to read only now.");
-    return IOStatus::NoSpace("Out of metadata zones");
+    Error(logger_, "Out of op log zones, we should go to read only now.");
+    return IOStatus::NoSpace("Out of op log zones");
   }
 
-  Info(logger_, "Rolling to metazone %d\n", (int)new_meta_zone->GetZoneNr());
-  new_meta_log = new ZenMetaLog(zbd_, new_meta_zone);
+  Info(logger_, "Rolling to op log %d\n", (int)new_op_zone->GetZoneNr());
+  new_op_log = new ZenMetaLog(zbd_, new_op_zone);
 
-  // reserve write pointer to the old metazone to close it later
-  std::unique_ptr<ZenMetaLog> old_meta_log = std::move(meta_log_);
+  // reserve write pointer to the old op log to close it later
+  std::unique_ptr<ZenMetaLog> old_op_log = std::move(op_log_);
 
-  // shift current write pointer to the new metazone
-  meta_log_.reset(new_meta_log);
+  // shift current write pointer to the new op log zone
+  op_log_.reset(new_op_log);
   std::string super_string;
-  superblock_->EncodeTo(&super_string);
-  s = meta_log_->AddRecord(super_string);
+  op_super_block_->EncodeTo(&super_string);
+  s = op_log_->AddRecord(super_string);
   if (!s.ok()) {
     Error(logger_,
-          "Could not write super block when rolling to a new meta zone");
+          "Could not write super block when rolling to a new op log zone");
     return IOStatus::IOError("Failed writing a new superblock");
   }
 
-  BackgroundWorker bg_worker;
-
   auto task = [&, this](void* arg) {
     IOStatus s;
-    /* close write for old metazone */
-    old_meta_zone = old_meta_log->GetZone();
-    old_meta_zone->open_for_write_ = false;
+    /* close write for old op log zones*/
+    old_op_zone = old_op_log->GetZone();
+    old_op_zone->open_for_write_ = false;
 
-    /* Write an end record and finish the meta data zone if there is space left */
-    if (old_meta_zone->GetCapacityLeft()) WriteEndRecord(meta_log_.get());
-    if (old_meta_zone->GetCapacityLeft()) old_meta_zone->Finish();
+    /* Write an end record and finish the op log data zone if there is space left */
+    if (old_op_zone->GetCapacityLeft()) WriteEndRecord(op_log_.get());
+    if (old_op_zone->GetCapacityLeft()) old_op_zone->Finish();
 
     // process write snapshot
-    s = WriteSnapshotInSnapshotZone(meta_snapshot_log_.get());
+    s = WriteSnapshot(snapshot_log_.get());
 
-    // reset old meta zones to empty state
+    // reset old op log zones to empty state
     if (s.ok()) {
-      old_meta_zone->Reset();
+      old_op_zone->Reset();
     }
 
-    // TODO: 返回值需要不是int
     return s.ok();
   };
 
-  // TODO: arg is a placeholder to satisfy SubmitJob signature
-  int arg = 42;
-  bg_worker.SubmitJob(task, (void*)&arg);
+  // {
+  //   BackgroundWorker bg_worker;
+  //   bg_worker.SubmitJob(task, nullptr);
+  // }
 
-  auto new_meta_zone_size =
-      meta_log_->GetZone()->wp_ - meta_log_->GetZone()->start_;
-  Info(logger_, "Size of new meta zone %ld\n", new_meta_zone_size);
-
-  zbd_->roll_throughput_reporter_.AddCount(new_meta_zone_size);
+  task(nullptr);
   return s;
-
 }
 #endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
 
