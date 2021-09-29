@@ -79,7 +79,7 @@ int test_mkfs() {
     FLAGS_aux_path.append("/");
   }
 
-  s = zenFS->MkFSV2(FLAGS_aux_path, FLAGS_finish_threshold,
+  s = zenFS->MkFS(FLAGS_aux_path, FLAGS_finish_threshold,
                   FLAGS_max_open_zones, FLAGS_max_active_zones);
   if (!s.ok()) {
     fprintf(stderr, "Failed to create file system, error: %s\n",

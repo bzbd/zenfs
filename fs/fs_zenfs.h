@@ -188,11 +188,16 @@ class ZenFS : public FileSystemWrapper {
   ZoneFile* GetFile(std::string fname);
   IOStatus DeleteFile(std::string fname);
 
-  Status FindAllValidSuperblocks(const std::vector<Zone*>& zones,
+  Status FindAllValidSuperblocks(std::vector<Zone*> const & zones,
     std::vector<std::unique_ptr<Superblock>>& valid_superblocks,
     std::vector<std::unique_ptr<ZenMetaLog>>& valid_logs,
     std::vector<Zone*>& valid_zones,
     std::vector<std::pair<uint32_t, uint32_t>>& seq_map);
+
+  Status ResetZone(std::vector<Zone*> const & zones,
+    Zone* reset_zone, std::unique_ptr<ZenMetaLog>* log,
+    std::string const & aux_fs_path, uint32_t const finish_threshold,
+    uint32_t const max_open_limit, uint32_t const max_active_limit);
 
  public:
   explicit ZenFS(ZonedBlockDevice* zbd, std::shared_ptr<FileSystem> aux_fs,
@@ -201,8 +206,6 @@ class ZenFS : public FileSystemWrapper {
 
   Status Mount(bool readonly);
   Status MkFS(std::string aux_fs_path, uint32_t finish_threshold,
-              uint32_t max_open_limit, uint32_t max_active_limit);
-  Status MkFSV2(std::string aux_fs_path, uint32_t finish_threshold,
               uint32_t max_open_limit, uint32_t max_active_limit);
   std::map<std::string, Env::WriteLifeTimeHint> GetWriteLifeTimeHints();
 

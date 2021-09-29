@@ -1031,7 +1031,7 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 
 #define ZENV_URI_PATTERN "zenfs://"
 
-Status ZenFS::FindAllValidSuperblocks(const std::vector<Zone*>& zones,
+Status ZenFS::FindAllValidSuperblocks(std::vector<Zone*> const & zones,
     std::vector<std::unique_ptr<Superblock>>& valid_superblocks,
     std::vector<std::unique_ptr<ZenMetaLog>>& valid_logs,
     std::vector<Zone*>& valid_zones,
@@ -1266,81 +1266,47 @@ Status ZenFS::Mount(bool readonly) {
   return Status::OK();
 }
 
-Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
-                   uint32_t max_open_limit, uint32_t max_active_limit) {
-  std::vector<Zone*> op_zones = zbd_->GetOpZones();
-  std::unique_ptr<ZenMetaLog> log;
-  Zone* meta_zone = nullptr;
-  IOStatus s;
+Status ZenFS::ResetZone(std::vector<Zone*> const & zones,
+    Zone* reset_zone, std::unique_ptr<ZenMetaLog>* log,
+    std::string const & aux_fs_path, uint32_t const finish_threshold,
+    uint32_t const max_open_limit, uint32_t const max_active_limit) {
 
-  /* TODO: check practical limits */
+  Status s;
 
-  if (max_open_limit > zbd_->GetMaxOpenZones()) {
-    return Status::InvalidArgument(
-        "Max open zone limit exceeds the device limit\n");
-  }
-
-  if (max_active_limit > zbd_->GetMaxActiveZones()) {
-    return Status::InvalidArgument(
-        "Max active zone limit exceeds the device limit\n");
-  }
-
-  if (max_active_limit < max_open_limit) {
-    return Status::InvalidArgument(
-        "Max open limit must be smaller than max active limit\n");
-  }
-
-  if (aux_fs_path.length() > 255) {
-    return Status::InvalidArgument(
-        "Aux filesystem path must be less than 256 bytes\n");
-  }
-
-  ClearFiles();
-  zbd_->ResetUnusedIOZones();
-
-  for (const auto mz : op_zones) {
-    if (mz->Reset().ok()) {
-      if (!meta_zone) meta_zone = mz;
+  for (const auto z : zones) {
+    if (z->Reset().ok()) {
+      if (!reset_zone) reset_zone = z;
     } else {
-      Warn(logger_, "Failed to reset meta zone\n");
+      Warn(logger_, "Failed to reset the zone\n");
     }
   }
 
-  if (!meta_zone) {
-    return Status::IOError("No available meta zones\n");
+  if (!reset_zone) {
+    return Status::IOError("No available zones\n");
   }
 
-  log.reset(new ZenMetaLog(zbd_, meta_zone));
+  log->reset(new ZenMetaLog(zbd_, reset_zone));
 
   Superblock* super = new Superblock(zbd_, aux_fs_path, finish_threshold,
                                      max_open_limit, max_active_limit);
   std::string super_string;
   super->EncodeTo(&super_string);
 
-  s = log->AddRecord(super_string);
+  // write an empty superblock to the zone
+  s = (log->get())->AddRecord(super_string);
   if (!s.ok()) return std::move(s);
 
-  /* Write an empty snapshot to make the metadata zone valid */
-  s = PersistSnapshot(log.get());
-  if (!s.ok()) {
-    Error(logger_, "Failed to persist snapshot: %s", s.ToString().c_str());
-    return Status::IOError("Failed persist snapshot");
-  }
-
-  Info(logger_, "Empty filesystem created");
   return Status::OK();
 }
 
-
-Status ZenFS::MkFSV2(std::string aux_fs_path, uint32_t finish_threshold,
+Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
                    uint32_t max_open_limit, uint32_t max_active_limit) {
+  Status s;
+
   std::vector<Zone*> op_zones = zbd_->GetOpZones();
-  std::vector<Zone*> snapshot_zones = zbd_->GetSnapshotZones();
-  std::unique_ptr<ZenMetaLog> metadata_log;
-  std::unique_ptr<ZenMetaLog> snapshot_log;
-  Zone* meta_zone = nullptr;
-  Zone* snapshot_zone = nullptr;
-  IOStatus s;
+  std::unique_ptr<ZenMetaLog> op_log;
+  Zone* reset_meta_zone = nullptr;
+
 
   /* TODO: check practical limits */
 
@@ -1367,50 +1333,18 @@ Status ZenFS::MkFSV2(std::string aux_fs_path, uint32_t finish_threshold,
   ClearFiles();
   zbd_->ResetUnusedIOZones();
 
-  for (const auto mz : op_zones) {
-    if (mz->Reset().ok()) {
-      if (!meta_zone) meta_zone = mz;
-    } else {
-      Warn(logger_, "Failed to reset meta zone\n");
-    }
+#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+  std::vector<Zone*> snapshot_zones = zbd_->GetSnapshotZones();
+  std::unique_ptr<ZenMetaLog> snapshot_log;
+  Zone* reset_snapshot_zone = nullptr;
+
+  s = ResetZone(snapshot_zones, reset_snapshot_zone, &snapshot_log, aux_fs_path,
+      finish_threshold, max_open_limit, max_active_limit);
+
+  if (!s.ok()) {
+    Error(logger_, "Failed to reset snapshot: %s", s.ToString().c_str());
+    return Status::IOError("Failed to reset snapshot");
   }
-
-  if (!meta_zone) {
-    return Status::IOError("No available meta zones\n");
-  }
-  metadata_log.reset(new ZenMetaLog(zbd_, meta_zone));
-
-  Superblock* metadata_super = new Superblock(zbd_, aux_fs_path, finish_threshold,
-                                     max_open_limit, max_active_limit);
-  std::string metadata_super_string;
-  metadata_super->EncodeTo(&metadata_super_string);
-
-  // write an empty superblock to meta zone
-  s = metadata_log->AddRecord(metadata_super_string);
-  if (!s.ok()) return std::move(s);
-
-  for (const auto sz: snapshot_zones) {
-    if (sz->Reset().ok()) {
-      if (!snapshot_zone) snapshot_zone = sz;
-    } else {
-      Warn(logger_, "Failed to reset snapshot zone\n");
-    }
-  }
-
-  if (!snapshot_zone) {
-    return Status::IOError("No available snapshot zones\n");
-  }
-
-  snapshot_log.reset(new ZenMetaLog(zbd_, snapshot_zone));
-
-  Superblock* snapshot_super = new Superblock(zbd_, aux_fs_path, finish_threshold,
-                                     max_open_limit, max_active_limit);
-  std::string snapshot_super_string;
-  snapshot_super->EncodeTo(&snapshot_super_string);
-
-  // write an empty superblock to snapshot zone
-  s = snapshot_log->AddRecord(snapshot_super_string);
-  if (!s.ok()) return std::move(s);
 
   /* Write an empty snapshot to make the snapshot zone valid */
   s = PersistSnapshot(snapshot_log.get());
@@ -1418,6 +1352,25 @@ Status ZenFS::MkFSV2(std::string aux_fs_path, uint32_t finish_threshold,
     Error(logger_, "Failed to persist snapshot: %s", s.ToString().c_str());
     return Status::IOError("Failed persist snapshot");
   }
+#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+
+  s = ResetZone(op_zones, reset_meta_zone, &op_log, aux_fs_path,
+      finish_threshold, max_open_limit, max_active_limit);
+
+  if (!s.ok()) {
+    Error(logger_, "Failed to reset metadata: %s", s.ToString().c_str());
+    return Status::IOError("Failed to reset metadata");
+  }
+
+#ifndef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+  /* Write an empty snapshot to make the metadata zone valid */
+  s = PersistSnapshot(op_log.get());
+  if (!s.ok()) {
+    Error(logger_, "Failed to persist snapshot in log op zone: %s",
+        s.ToString().c_str());
+    return Status::IOError("Failed persist snapshot in log op zone");
+  }
+#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
 
   Info(logger_, "Empty filesystem created");
   return Status::OK();
