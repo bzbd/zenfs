@@ -87,10 +87,10 @@ int test_mkfs() {
   }
 
   /* verify if the fist snapshot zone has an empty snapshot record */
-  assert(!snapshot_zones[0].IsEmpty());
+  assert(!snapshot_zones[0]->IsEmpty());
   /* verify if the reset of snapshot zones are reset properly */
   for (int i = 1; i < snapshot_zones.size(); i++) {
-    assert(snapshot_zones[i].IsEmpty());
+    assert(snapshot_zones[i]->IsEmpty());
   }
 
   fprintf(stdout, "ZenFS file system created. Free space: %lu MB\n",
