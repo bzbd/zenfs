@@ -1189,16 +1189,10 @@ Status ZenFS::MountV2(bool readonly) {
   Status s;
 
   /* We need a minimum of two non-offline snapshot zones */
-  if (snapshot_zones.size() < 2) {
+  if (snapshot_zones.size() < 2 && op_zones.size() < 2) {
     Error(logger_,
-          "Need at least two non-offline snapshot zones to open for write");
-    return Status::NotSupported();
-  }
-
-  /* We need a minimum of two non-offline meta data zones */
-  if (op_zones.size() < 2) {
-    Error(logger_,
-          "Need at least two non-offline meta zones to open for write");
+          "Need at least two non-offline zones for snapshot and op log zones, "
+          "respectively, to open for write");
     return Status::NotSupported();
   }
 
