@@ -1031,145 +1031,6 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 
 #define ZENV_URI_PATTERN "zenfs://"
 
-///* Mount the filesystem by recovering form the latest valid metadata zone */
-//Status ZenFS::Mount(bool readonly) {
-//  std::vector<Zone*> op_zones = zbd_->GetOpZones();
-//  std::vector<std::unique_ptr<Superblock>> valid_superblocks;
-//  std::vector<std::unique_ptr<ZenMetaLog>> valid_logs;
-//  std::vector<Zone*> valid_zones;
-//  std::vector<std::pair<uint32_t, uint32_t>> seq_map;
-//
-//  Status s;
-//
-//  /* We need a minimum of two non-offline meta data zones */
-//  if (op_zones.size() < 2) {
-//    Error(logger_,
-//          "Need at least two non-offline meta zones to open for write");
-//    return Status::NotSupported();
-//  }
-//
-//  /* Find all valid superblocks */
-//  for (const auto z : op_zones) {
-//    std::unique_ptr<ZenMetaLog> log;
-//    std::string scratch;
-//    Slice super_record;
-//
-//    log.reset(new ZenMetaLog(zbd_, z));
-//
-//    if (!log->ReadRecord(&super_record, &scratch).ok()) continue;
-//
-//    if (super_record.size() == 0) continue;
-//
-//    std::unique_ptr<Superblock> super_block;
-//
-//    super_block.reset(new Superblock());
-//    s = super_block->DecodeFrom(&super_record);
-//    if (s.ok()) s = super_block->CompatibleWith(zbd_);
-//    if (!s.ok()) return s;
-//
-//    Info(logger_, "Found OK superblock in zone %lu seq: %u\n", z->GetZoneNr(),
-//         super_block->GetSeq());
-//
-//    seq_map.push_back(std::make_pair(super_block->GetSeq(), seq_map.size()));
-//    valid_superblocks.push_back(std::move(super_block));
-//    valid_logs.push_back(std::move(log));
-//    valid_zones.push_back(z);
-//  }
-//
-//  if (!seq_map.size()) return Status::NotFound("No valid superblock found");
-//
-//  /* Sort superblocks by descending sequence number */
-//  std::sort(seq_map.begin(), seq_map.end(),
-//            std::greater<std::pair<uint32_t, uint32_t>>());
-//
-//  bool recovery_ok = false;
-//  unsigned int r = 0;
-//
-//  /* Recover from the zone with the highest superblock sequence number.
-//     If that fails go to the previous as we might have crashed when rolling
-//     metadata zone.
-//  */
-//  for (const auto& sm : seq_map) {
-//    uint32_t i = sm.second;
-//    std::string scratch;
-//    std::unique_ptr<ZenMetaLog> log = std::move(valid_logs[i]);
-//
-//    s = RecoverFrom(log.get());
-//    if (!s.ok()) {
-//      if (s.IsNotFound()) {
-//        Warn(logger_,
-//             "Did not find a valid snapshot, trying next meta zone. Error: %s",
-//             s.ToString().c_str());
-//        continue;
-//      }
-//
-//      Error(logger_, "Metadata corruption. Error: %s", s.ToString().c_str());
-//      return s;
-//    }
-//
-//    r = i;
-//    recovery_ok = true;
-//    op_log_ = std::move(log);
-//    break;
-//  }
-//
-//  if (!recovery_ok) {
-//    return Status::IOError("Failed to mount filesystem");
-//  }
-//
-//  Info(logger_, "Recovered from zone: %d", (int)valid_zones[r]->GetZoneNr());
-//  op_super_block_ = std::move(valid_superblocks[r]);
-//  zbd_->SetFinishTreshold(op_super_block_->GetFinishTreshold());
-//  zbd_->SetMaxActiveZones(op_super_block_->GetMaxActiveZoneLimit());
-//  zbd_->SetMaxOpenZones(op_super_block_->GetMaxOpenZoneLimit());
-//
-//  IOOptions foo;
-//  IODebugContext bar;
-//  s = target()->CreateDirIfMissing(op_super_block_->GetAuxFsPath(), foo, &bar);
-//  if (!s.ok()) {
-//    Error(logger_, "Failed to create aux filesystem directory.");
-//    return s;
-//  }
-//
-//  /* Free up old metadata zones, to get ready to roll */
-//  for (const auto& sm : seq_map) {
-//    uint32_t i = sm.second;
-//    /* Don't reset the current metadata zone */
-//    if (i != r) {
-//      /* Metadata zones are not marked as having valid data, so they can be
-//       * reset */
-//      valid_logs[i].reset();
-//    }
-//  }
-//
-//  if (readonly) {
-//    Info(logger_, "Mounting READ ONLY");
-//  } else {
-//    files_mtx_.lock();
-//    s = RollMetaZone();
-//    if (!s.ok()) {
-//      files_mtx_.unlock();
-//      Error(logger_, "Failed to roll metadata zone.");
-//      return s;
-//    }
-//    files_mtx_.unlock();
-//  }
-//
-//  Info(logger_, "Superblock sequence %d", (int)op_super_block_->GetSeq());
-//  Info(logger_, "Finish threshold %u", op_super_block_->GetFinishTreshold());
-//  Info(logger_, "Filesystem mount OK");
-//
-//  if (!readonly) {
-//    Info(logger_, "Resetting unused IO Zones..");
-//    zbd_->ResetUnusedIOZones();
-//    Info(logger_, "  Done");
-//  }
-//
-//  LogFiles();
-//
-//  return Status::OK();
-//}
-
 Status ZenFS::FindAllValidSuperblocks(const std::vector<Zone*>& zones,
     std::vector<std::unique_ptr<Superblock>>& valid_superblocks,
     std::vector<std::unique_ptr<ZenMetaLog>>& valid_logs,
@@ -1229,17 +1090,12 @@ Status ZenFS::FindAllValidSuperblocks(const std::vector<Zone*>& zones,
 Status ZenFS::Mount(bool readonly) {
   Status s;
 
+#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   std::vector<Zone*> snapshot_zones = zbd_->GetSnapshotZones();
   std::vector<std::unique_ptr<Superblock>> valid_superblocks_snapshot;
   std::vector<std::unique_ptr<ZenMetaLog>> valid_logs_snapshot;
   std::vector<Zone*> valid_zones_snapshot;
   std::vector<std::pair<uint32_t, uint32_t>> seq_map_snapshot;
-
-  std::vector<Zone*> op_zones = zbd_->GetOpZones();
-  std::vector<std::unique_ptr<Superblock>> valid_superblocks_metadata;
-  std::vector<std::unique_ptr<ZenMetaLog>> valid_logs_metadata;
-  std::vector<Zone*> valid_zones_metadata;
-  std::vector<std::pair<uint32_t, uint32_t>> seq_map_metadata;
 
   s = FindAllValidSuperblocks(snapshot_zones, valid_superblocks_snapshot,
       valid_logs_snapshot, valid_zones_snapshot, seq_map_snapshot);
@@ -1248,6 +1104,12 @@ Status ZenFS::Mount(bool readonly) {
         s.ToString().c_str());
     return s;
   }
+
+  std::vector<Zone*> op_zones = zbd_->GetOpZones();
+  std::vector<std::unique_ptr<Superblock>> valid_superblocks_metadata;
+  std::vector<std::unique_ptr<ZenMetaLog>> valid_logs_metadata;
+  std::vector<Zone*> valid_zones_metadata;
+  std::vector<std::pair<uint32_t, uint32_t>> seq_map_metadata;
 
   s = FindAllValidSuperblocks(op_zones, valid_superblocks_metadata,
       valid_logs_metadata, valid_zones_metadata, seq_map_metadata);
@@ -1309,42 +1171,7 @@ Status ZenFS::Mount(bool readonly) {
     }
   }
 
-  /* Find all valid superblocks in op_zones*/
-  for (const auto z : op_zones) {
-    std::unique_ptr<ZenMetaLog> log;
-    std::string scratch;
-    Slice super_record;
-
-    log.reset(new ZenMetaLog(zbd_, z));
-
-    if (!log->ReadRecord(&super_record, &scratch).ok()) continue;
-
-    if (super_record.size() == 0) continue;
-
-    std::unique_ptr<Superblock> super_block;
-
-    super_block.reset(new Superblock());
-    s = super_block->DecodeFrom(&super_record);
-    if (s.ok()) s = super_block->CompatibleWith(zbd_);
-    if (!s.ok()) return s;
-
-    Info(logger_, "Found OK superblock in zone %lu seq: %u\n", z->GetZoneNr(),
-         super_block->GetSeq());
-
-    seq_map_metadata.push_back(std::make_pair(super_block->GetSeq(),
-                                 seq_map_metadata.size()));
-    valid_superblocks_metadata.push_back(std::move(super_block));
-    valid_logs_metadata.push_back(std::move(log));
-    valid_zones_metadata.push_back(z);
-  }
-
-  if (!seq_map_metadata.size()) {
-    return Status::NotFound("No valid superblock found from metadata zones");
-  }
-
-  /* Sort superblocks by descending sequence number in metadata zones*/
-  std::sort(seq_map_metadata.begin(), seq_map_metadata.end(),
-            std::greater<std::pair<uint32_t, uint32_t>>());
+#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
 
   bool metadata_recovery_ok = false;
   unsigned int metadata_recovered_index = 0;
@@ -1386,6 +1213,7 @@ Status ZenFS::Mount(bool readonly) {
              (int)valid_zones_metadata[metadata_recovered_index]->GetZoneNr());
   op_super_block_ =
     std::move(valid_superblocks_metadata[metadata_recovered_index]);
+
   zbd_->SetFinishTreshold(op_super_block_->GetFinishTreshold());
   zbd_->SetMaxActiveZones(op_super_block_->GetMaxActiveZoneLimit());
   zbd_->SetMaxOpenZones(op_super_block_->GetMaxOpenZoneLimit());
