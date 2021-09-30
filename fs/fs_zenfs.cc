@@ -1285,8 +1285,10 @@ Status ZenFS::Mount(bool readonly) {
   }
 
   if (!op_zone_recovery_ok) {
+    Error(logger_, "Failed to mount filesystem due to op log zone recovery: %s"
+        , s.ToString().c_str());
     return Status::IOError("Failed to mount filesystem due to "
-                           "op log zone recovery");
+                           "op log zone recovery " + s.ToString());
   }
 
   Info(logger_, "Recovered from zone: %d",

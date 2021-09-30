@@ -22,12 +22,8 @@ int test_metadata_rollover() {
   ZenFS *zenFS;
   s = zenfs_mount(zbd, &zenFS, false, logger);
   if (!s.ok()) {
-#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
-    assert(find_sub_string(s.ToString().c_str(), "Calling experimental function "
-                                                 "ZenFS::RollMetaZoneAsync()"));
-    return 0;
-#endif
-    fprintf(stderr, "Failed to mount filesystem, error: %s\n", s.ToString().c_str());
+    fprintf(stderr, "Failed to mount filesystem, error: %s\n",
+        s.ToString().c_str());
     return 1;
   }
 
