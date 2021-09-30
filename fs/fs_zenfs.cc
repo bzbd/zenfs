@@ -320,7 +320,7 @@ IOStatus ZenFS::RollMetaZone() {
 /* Assumes the files_mtx_ is held */
 IOStatus ZenFS::RollMetaZoneAsync() {
   ZenMetaLog* new_op_log;
-  Zone *new_op_zone, *old_op_zone;
+  Zone *new_op_zone;
   IOStatus s;
   LatencyHistGuard guard(&zbd_->roll_latency_reporter_);
   zbd_->roll_qps_reporter_.AddCount(1);
@@ -350,10 +350,10 @@ IOStatus ZenFS::RollMetaZoneAsync() {
     return IOStatus::IOError("Failed writing a new superblock");
   }
 
-  auto task = [&, this](void* arg) {
+  auto task = [&, old_op_log = std::move(old_op_log)](void* arg) {
     IOStatus s;
     /* close write for old op log zones*/
-    old_op_zone = old_op_log->GetZone();
+    auto old_op_zone = old_op_log->GetZone();
     old_op_zone->open_for_write_ = false;
 
     /* Write an end record and finish the op log data zone if there is space left */
@@ -368,7 +368,13 @@ IOStatus ZenFS::RollMetaZoneAsync() {
       old_op_zone->Reset();
     }
 
-    return s.ok();
+    if (!s.ok()) {
+      Error(logger_, "Failed to reset old op zone. Error: %s",
+        s.ToString().c_str());
+      return Status::IOError("Failed to reset old op zone. " + s.ToString());
+    }
+
+    return Status::OK();
   };
 
   // {
