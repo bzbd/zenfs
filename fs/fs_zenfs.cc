@@ -350,7 +350,7 @@ IOStatus ZenFS::RollMetaZoneAsync() {
     return IOStatus::IOError("Failed writing a new superblock");
   }
 
-  auto task = [&, old_op_log = std::move(old_op_log)](void* arg) {
+  auto task = [&](void* arg) {
     IOStatus s;
     /* close write for old op log zones*/
     auto old_op_zone = old_op_log->GetZone();
@@ -371,18 +371,19 @@ IOStatus ZenFS::RollMetaZoneAsync() {
     if (!s.ok()) {
       Error(logger_, "Failed to reset old op zone. Error: %s",
         s.ToString().c_str());
-      return Status::IOError("Failed to reset old op zone. " + s.ToString());
+      return false;
+      //return Status::IOError("Failed to reset old op zone. " + s.ToString());
     }
 
-    return Status::OK();
+    return true;
+    //return Status::OK();
   };
 
-  // {
-  //   BackgroundWorker bg_worker;
-  //   bg_worker.SubmitJob(task, nullptr);
-  // }
+  {
+    BackgroundWorker bg_worker;
+    bg_worker.SubmitJob(task, nullptr);
+  }
 
-  task(nullptr);
   return s;
 }
 #endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER

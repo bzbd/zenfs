@@ -32,15 +32,6 @@ DEFINE_string(backup_path, "", "Path to backup files");
 DEFINE_int32(max_active_zones, 0, "Max active zone limit");
 DEFINE_int32(max_open_zones, 0, "Max active zone limit");
 
-bool find_sub_string(std::string const& inputString, std::string const& subString) {
-  std::size_t found = inputString.find(subString);
-  if (found!=std::string::npos) {
-    return false;
-  }
-
-  return true;
-}
-
 namespace ROCKSDB_NAMESPACE {
 
 #define DEFAULT_ZENV_LOG_PATH "/tmp/"
