@@ -1262,6 +1262,13 @@ Status ZenFS::Mount(bool readonly) {
 
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
     s = RecoverFromOpLogZone(log.get());
+
+    if(s.IsNotFound() && i == 0) {
+      op_zone_recovered_index = i;
+      op_zone_recovery_ok = true;
+      op_log_ = std::move(log);
+      break;
+    }
 #else
     s = RecoverFrom(log.get());
 #endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
