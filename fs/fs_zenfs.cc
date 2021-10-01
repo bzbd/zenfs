@@ -283,20 +283,37 @@ IOStatus ZenFS::WriteSnapshotLocked(ZenMetaLog* meta_log) {
   return s;
 }
 
+IOStatus ZenFS::RollSnapshotZone() {
+  IOStatus s;
+  return s;
+}
+
 /* Assumes that files_mutex_ is held */
-IOStatus ZenFS::WriteSnapshot(ZenMetaLog* meta_snapshot_log) {
+IOStatus ZenFS::WriteSnapshot(ZenMetaLog* snapshot_log) {
   // TODO: If space is not enough for another snapshot.
   IOStatus s;
   std::string snapshot;
 
   EncodeSnapshotTo(&snapshot);
-  s = meta_snapshot_log->AddRecord(snapshot);
+  s = snapshot_log->AddRecord(snapshot);
   if (s.ok()) {
     for (auto it = files_.begin(); it != files_.end(); it++) {
       ZoneFile* zoneFile = it->second;
       zoneFile->MetadataSynced();
     }
   }
+
+  // TODO: do we need metadata_sync_mtx_.lock(); ???
+  if (s == IOStatus::NoSpace()) {
+    Info(logger_, "Current snapshot zone full, rolling to next snapshot zone");
+    s = RollSnapshotZone();
+  }
+
+  if (!s.ok()) {
+    Error(logger_,
+          "Failed roll a snapshot, we should go to read only now!");
+  }
+
   return s;
 }
 
