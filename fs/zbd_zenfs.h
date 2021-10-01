@@ -212,6 +212,7 @@ class ZonedBlockDevice {
 
   Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
   Zone *AllocateMetaZone();
+  Zone *AllocateSnapshotZone();
 
   uint64_t GetFreeSpace();
   uint64_t GetUsedSpace();

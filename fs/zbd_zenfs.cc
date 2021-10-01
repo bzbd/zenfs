@@ -721,6 +721,37 @@ Zone *ZonedBlockDevice::AllocateMetaZone() {
   return nullptr;
 }
 
+Zone *ZonedBlockDevice::AllocateSnapshotZone() {
+  LatencyHistGuard guard(&meta_alloc_latency_reporter_);
+  meta_alloc_qps_reporter_.AddCount(1);
+
+  // Wait till there is an empty snapshot zone
+  // std::unique_lock<std::mutex> lk(snapshot_reset_mtx_);
+  //snapshot_reset_cv_.wait(lk, [&] {
+  //  for (const auto z : snapshot_zones) {
+  //    if (!z->IsUsed() && z->IsEmpty()) {
+  //      return true;
+  //    }
+  //  }
+  //});
+
+  // TODO(guokuankuan) we don't have to do the resetting here anymore
+  for (const auto z : snapshot_zones) {
+    /* If the zone is not used, reset and use it */
+    if (!z->IsUsed()) {
+      if (!z->IsEmpty()) {
+        if (!z->Reset().ok()) {
+          Warn(logger_, "Failed resetting zone!");
+          continue;
+        }
+      }
+      return z;
+    }
+  }
+
+  return nullptr;
+}
+
 void ZonedBlockDevice::ResetUnusedIOZones() {
   const std::lock_guard<std::mutex> lock(zone_resources_mtx_);
   /* Reset any unused zones */

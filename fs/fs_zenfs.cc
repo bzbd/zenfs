@@ -284,13 +284,57 @@ IOStatus ZenFS::WriteSnapshotLocked(ZenMetaLog* meta_log) {
 }
 
 IOStatus ZenFS::RollSnapshotZone() {
+  ZenMetaLog* new_snapshot_log;
+  Zone *new_snapshot_log_zone, *old_snapshot_log_zone;
   IOStatus s;
+  LatencyHistGuard guard(&zbd_->roll_latency_reporter_);
+  zbd_->roll_qps_reporter_.AddCount(1);
+
+  new_snapshot_log_zone = zbd_->AllocateMetaZone();
+
+  if (!new_snapshot_log_zone) {
+    assert(false);  // TMP
+    Error(logger_, "Out of snapshot zones, we should go to read only now.");
+    return IOStatus::NoSpace("Out of snapshot log zones");
+  }
+
+  Info(logger_, "Rolling to snapshot log %d\n",
+      (int)new_snapshot_log_zone->GetZoneNr());
+  new_snapshot_log = new ZenMetaLog(zbd_, new_snapshot_log_zone);
+  old_snapshot_log_zone = snapshot_log_->GetZone();
+  old_snapshot_log_zone->open_for_write_ = false;
+
+  /* Write an end record and finish the snapshot log zone if there is space left */
+  if (old_snapshot_log_zone->GetCapacityLeft()) WriteEndRecord(snapshot_log_.get());
+  if (old_snapshot_log_zone->GetCapacityLeft()) old_snapshot_log_zone->Finish();
+
+  snapshot_log_.reset(new_snapshot_log);
+
+  std::string super_string;
+  snapshot_super_block_->EncodeTo(&super_string);
+
+  s = WriteSnapshot(snapshot_log_.get());
+  if (!s.ok()) {
+    Error(logger_,
+          "Could not write super block when rolling to a new snapshot log zone");
+    return IOStatus::IOError("Failed writing a new superblock when rolling to a "
+                             "new snapshot log zone");
+  }
+
+  /* We've rolled successfully, we can reset the old zone now */
+  old_snapshot_log_zone->Reset();
+
+  auto new_snapshot_log_zone_size =
+      snapshot_log_->GetZone()->wp_ - snapshot_log_->GetZone()->start_;
+  Info(logger_, "Size of new snapshot log zone %ld\n",
+      new_snapshot_log_zone_size);
+
+  zbd_->roll_throughput_reporter_.AddCount(new_snapshot_log_zone_size);
   return s;
 }
 
 /* Assumes that files_mutex_ is held */
 IOStatus ZenFS::WriteSnapshot(ZenMetaLog* snapshot_log) {
-  // TODO: If space is not enough for another snapshot.
   IOStatus s;
   std::string snapshot;
 
@@ -303,7 +347,6 @@ IOStatus ZenFS::WriteSnapshot(ZenMetaLog* snapshot_log) {
     }
   }
 
-  // TODO: do we need metadata_sync_mtx_.lock(); ???
   if (s == IOStatus::NoSpace()) {
     Info(logger_, "Current snapshot zone full, rolling to next snapshot zone");
     s = RollSnapshotZone();
@@ -364,7 +407,8 @@ IOStatus ZenFS::RollMetaZoneAsync() {
   if (!s.ok()) {
     Error(logger_,
           "Could not write super block when rolling to a new op log zone");
-    return IOStatus::IOError("Failed writing a new superblock");
+    return IOStatus::IOError("Failed writing a new superblock when rolling to a "
+                             "new op log zone");
   }
 
   auto task = [&](void* arg) {
@@ -379,21 +423,27 @@ IOStatus ZenFS::RollMetaZoneAsync() {
 
     // process write snapshot
     s = WriteSnapshot(snapshot_log_.get());
-
-    // reset old op log zones to empty state
-    if (s.ok()) {
-      old_op_zone->Reset();
+    if (!s.ok()) {
+      Error(logger_,
+            "Could not write snapshot when rolling to a new snapshpt log zone");
+      std::cout << "Failed writing a new snapshot\n";
+      //return IOStatus::IOError("Failed writing a new snapshot");
+      return false;
     }
 
+    // reset old op log zones to empty state
+    s = old_op_zone->Reset();
     if (!s.ok()) {
       Error(logger_, "Failed to reset old op zone. Error: %s",
         s.ToString().c_str());
-      return false;
+      std::cout << "Failed to reset old op zone. " + s.ToString() + "\n";
       //return Status::IOError("Failed to reset old op zone. " + s.ToString());
+      return false;
     }
 
-    return true;
+    std::cout << "close op log zone OK, write a new snapshot OK\n";
     //return Status::OK();
+    return true;
   };
 
   {
