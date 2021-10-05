@@ -2,34 +2,6 @@
 
 namespace ROCKSDB_NAMESPACE {
 
-int test_metadata_rollover() {
-  std::shared_ptr<Logger> logger;
-  Status s;
-
-  s = Env::Default()->NewLogger(GetLogFilename(FLAGS_zbd), &logger);
-  if (!s.ok()) {
-    fprintf(stderr, "ZenFS: Could not create logger");
-  } else {
-    logger->SetInfoLogLevel(DEBUG_LEVEL);
-  }
-
-  ZonedBlockDevice *zbd = zbd_open(false, logger);
-  if (zbd == nullptr) {
-    fprintf(stderr, "Failed to open file\n");;
-    return 1;
-  }
-
-  ZenFS *zenFS;
-  s = zenfs_mount(zbd, &zenFS, false, logger);
-  if (!s.ok()) {
-    fprintf(stderr, "Failed to mount filesystem, error: %s\n",
-        s.ToString().c_str());
-    return 1;
-  }
-
-  return 0;
-}
-
 int test_mkfs() {
   Status s;
   DIR* aux_dir;
@@ -131,8 +103,6 @@ int main(int argc, char **argv) {
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  // TODO:
-  // ROCKSDB_NAMESPACE::test_metadata_rollover();
   ROCKSDB_NAMESPACE::test_mkfs();
   ROCKSDB_NAMESPACE::test_mount();
 
