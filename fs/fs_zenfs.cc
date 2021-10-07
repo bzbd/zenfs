@@ -1410,6 +1410,14 @@ Status ZenFS::Mount(bool readonly) {
       Error(logger_, "Failed to roll metadata zone.");
       return s;
     }
+#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+    s = RollSnapshotZone();
+    if (!s.ok()) {
+      files_mtx_.unlock();
+      Error(logger_, "Failed to roll snapshot zone.");
+      return s;
+    }
+#endif
     files_mtx_.unlock();
   }
 
