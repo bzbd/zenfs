@@ -427,6 +427,8 @@ IOStatus ZenFS::RollMetaZoneAsync() {
       Error(logger_,
             "Could not write snapshot when rolling to a new snapshpt log zone");
       std::cout << "Failed writing a new snapshot\n";
+
+      // TODO: wait for background worker refactor finishes
       //return IOStatus::IOError("Failed writing a new snapshot");
       return false;
     }
@@ -437,16 +439,19 @@ IOStatus ZenFS::RollMetaZoneAsync() {
       Error(logger_, "Failed to reset old op zone. Error: %s",
         s.ToString().c_str());
       std::cout << "Failed to reset old op zone. " + s.ToString() + "\n";
+
+      // TODO: wait for background worker refactor finishes
       //return Status::IOError("Failed to reset old op zone. " + s.ToString());
       return false;
     }
 
-    std::cout << "close op log zone OK, write a new snapshot OK\n";
+    // TODO: wait for background worker refactor finishes
     //return Status::OK();
     return true;
   };
 
   {
+    // TODO: wait for background worker refactor finishes
     BackgroundWorker bg_worker;
     bg_worker.SubmitJob(task, nullptr);
   }
@@ -1337,6 +1342,9 @@ Status ZenFS::Mount(bool readonly) {
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
     s = RecoverFromOpLogZone(log.get());
 
+    // For the formatted condition, we will not find any op log.
+    // So when we scan the last op log zone (i == 0), we will only reach
+    // end of file with no op log zone found.
     if(s.IsNotFound() && i == 0) {
       op_zone_recovered_index = i;
       op_zone_recovery_ok = true;
