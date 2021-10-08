@@ -397,7 +397,7 @@ IOStatus ZenFS::RollMetaZoneAsync() {
   new_op_log = new ZenMetaLog(zbd_, new_op_zone);
 
   // reserve write pointer to the old op log to close it later
-  std::unique_ptr<ZenMetaLog> old_op_log = std::move(op_log_);
+  std::shared_ptr<ZenMetaLog> old_op_log = std::move(op_log_);
 
   // shift current write pointer to the new op log zone
   op_log_.reset(new_op_log);
@@ -412,8 +412,7 @@ IOStatus ZenFS::RollMetaZoneAsync() {
   }
 
   {
-    BackgroundWorker bg_worker;
-    bg_worker.SubmitJob([&]() {
+    zbd_->meta_worker_->SubmitJob([&, old_op_log = std::move(old_op_log)]() {
       IOStatus s;
       /* close write for old op log zones*/
       auto old_op_zone = old_op_log->GetZone();

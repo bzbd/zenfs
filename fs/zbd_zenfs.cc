@@ -572,6 +572,8 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
   free(zone_rep);
   start_time_ = time(NULL);
 
+  meta_worker_.reset(new BackgroundWorker());
+
   return IOStatus::OK();
 }
 

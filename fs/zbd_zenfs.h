@@ -168,7 +168,6 @@ class ZonedBlockDevice {
   std::shared_ptr<Logger> logger_;
   uint32_t finish_threshold_ = 0;
 
-  std::shared_ptr<BackgroundWorker> meta_worker_;
   std::shared_ptr<BackgroundWorker> data_worker_;
   std::list<Zone *> active_zones_list_;
   std::mutex active_zone_list_mtx_;
@@ -297,6 +296,8 @@ class ZonedBlockDevice {
   using DataReporter = HistReporterHandle &;
   DataReporter active_zones_reporter_;
   DataReporter open_zones_reporter_;
+
+  std::shared_ptr<BackgroundWorker> meta_worker_;
 
  private:
   std::string ErrorToString(int err);
