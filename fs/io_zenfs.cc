@@ -236,7 +236,7 @@ ZoneFile::~ZoneFile() {
     zone->used_capacity_ -= (*e)->length_;
     delete *e;
 #ifdef TEST_DATAZONE_REFACTOR
-    if (zone->used_capacity_ == 0) {
+    if (zone->used_capacity_ == 0 && zone->state_.load() == kReadOnly) {
       zone->zbd_->BgResetDataZone(zone);
     }
 #endif

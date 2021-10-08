@@ -89,15 +89,18 @@ uint64_t Zone::GetZoneNr() { return start_ / zbd_->GetZoneSize(); }
 void Zone::CloseWR() {
   assert(open_for_write_);
   Sync();
-  state_ = kReadOnly;
-  std::lock_guard<std::mutex> lock(zbd_->zone_resources_mtx_);
-  if (Close().ok()) {
-    assert(!open_for_write_);
-    zbd_->NotifyIOZoneClosed();
+  if (capacity_ < (max_capacity_ *  zbd_->finish_threshold_ / 100)) {
+    state_.store(kReadOnly);
+    std::lock_guard<std::mutex> lock(zbd_->zone_resources_mtx_);
+    if (Close().ok()) {
+      assert(!open_for_write_);
+      zbd_->NotifyIOZoneClosed();
+    }
+    if (capacity_ == 0) zbd_->NotifyIOZoneFull();
+    zbd_->BgReplaceReadOnlyZones();
+  } else {
+    state_.store(kActive);
   }
-
-  if (capacity_ == 0) zbd_->NotifyIOZoneFull();
-  zbd_->BgReplaceReadOnlyZones();
 }
 
 void Zone::EncodeJson(std::ostream &json_stream) {
@@ -580,6 +583,18 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
     return lhs->capacity_ > rhs->capacity_;
   });
 
+  for (int i = 0; i < max_nr_active_io_zones_ - ZENFS_META_ZONES; ++i) {
+    auto z = io_zones.front();
+    z->open_for_write_ = true;
+    if (!z->IsFull()) {
+      z->state_ = kActive;
+    } else {
+      z->state_ = kReadOnly;
+    }
+    active_zones_vec_.push_back(z);
+    io_zones.pop_front();
+  }
+
   free(zone_rep);
   start_time_ = time(NULL);
 
@@ -757,7 +772,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   // We reserve one more free zone for WAL files in case RocksDB delay close WAL files.
   int reserved_zones = 1;
-
 
   auto *reporter_total = high_pri ? &io_alloc_wal_latency_reporter_
           : &io_alloc_non_wal_latency_reporter_;
@@ -956,17 +970,19 @@ Zone *ZonedBlockDevice::AllocateDataZone(Env::WriteLifeTimeHint file_lifetime, b
 
   Zone* ret = nullptr;
 
-  if (high_pri) {
-    // High priority requset : take it and go!
-    high_pri_requset_++;
-    ret = GetDataZone();
-    high_pri_requset_--;
-  } else {
-    // Low priority requset : wait until no contention.
-    while (high_pri_requset_.load() != 0) {
-      std::this_thread::yield();
+  while (!ret) {
+    if (high_pri) {
+      // High priority requset : take it and go!
+      high_pri_requset_++;
+      ret = GetDataZone();
+      high_pri_requset_--;
+    } else {
+      // Low priority requset : wait until no contention.
+      while (high_pri_requset_.load() != 0) {
+        std::this_thread::yield();
+      }
+      ret = GetDataZone();
     }
-    ret = GetDataZone();
   }
 
   return ret;
@@ -989,16 +1005,17 @@ void ZonedBlockDevice::BgReplaceReadOnlyZones() {
         // When fisrt one isn't empty, theres no resources.
         if (replace->state_.load() != kEmpty) continue;
         // Insert used one into io_zones.
-        for (auto it = io_zones.begin();; it++) {
-          if ((*it)->capacity_ < active->capacity_ || it == io_zones.end()) {
-            io_zones.insert(it, active);
-            break;
-          }
+        auto it = io_zones.begin();
+        for (; it != io_zones.end(); it++) {
+          if ((*it)->capacity_ < active->capacity_) break;
         }
+        io_zones.insert(it, active);
         // Get replacement and set active.
         io_zones.pop_front();
+        active->Finish();
         active = replace;
         active->state_.store(kActive);
+        active->open_for_write_ = true;
       }
     }
   });
@@ -1008,7 +1025,7 @@ void ZonedBlockDevice::BgResetDataZone(Zone* target) {
   /// After change io_zones into capacity sorted circle list, we need alter
   /// head/tail pointer of it after successfully reset a zone. Should also
   /// handled in this function.
-  data_worker_->SubmitJob([&]() {
+  data_worker_->SubmitJob([&, target]() {
     auto s = target->Reset();
     if (!s.ok()) {
       Error(logger_, "Failed to reset zones, err: %s", s.ToString().c_str());

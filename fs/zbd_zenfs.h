@@ -6,6 +6,8 @@
 
 #pragma once
 
+#define TEST_DATAZONE_REFACTOR 1
+
 #if !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 
 #include <errno.h>
@@ -164,7 +166,6 @@ class ZonedBlockDevice {
   int write_f_;
   time_t start_time_;
   std::shared_ptr<Logger> logger_;
-  uint32_t finish_threshold_ = 0;
 
   std::shared_ptr<BackgroundWorker> meta_worker_;
   std::shared_ptr<BackgroundWorker> data_worker_;
@@ -172,7 +173,7 @@ class ZonedBlockDevice {
   static const int reserved_active_zones = 2;
   std::mutex active_zone_vec_mtx_;
 
-  std::atomic<int> high_pri_requset_;
+  std::atomic<int> high_pri_requset_{0};
 
   // If a thread is allocating a zone fro WAL files, other
   // thread shouldn't take `io_zones_mtx` (see AllocateZone())
@@ -195,6 +196,8 @@ class ZonedBlockDevice {
   std::mutex metazone_reset_mtx_;
   std::condition_variable metazone_reset_cv_;
 
+  uint32_t finish_threshold_ = 0;
+  
  public:
   explicit ZonedBlockDevice(std::string bdevname,
                             std::shared_ptr<Logger> logger);
@@ -299,8 +302,8 @@ class ZonedBlockDevice {
   LatencyReporter sync_latency_reporter_;
   LatencyReporter meta_alloc_latency_reporter_;
   LatencyReporter io_alloc_wal_latency_reporter_;
-  LatencyReporter io_alloc_wal_actual_latency_reporter_;
   LatencyReporter io_alloc_non_wal_latency_reporter_;
+  LatencyReporter io_alloc_wal_actual_latency_reporter_;
   LatencyReporter io_alloc_non_wal_actual_latency_reporter_;
   LatencyReporter roll_latency_reporter_;
 
