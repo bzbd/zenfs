@@ -226,6 +226,7 @@ ZenFS::~ZenFS() {
   zbd_->LogZoneUsage();
   LogFiles();
 
+  zbd_->meta_worker_->Terminate();
   op_log_.reset(nullptr);
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   snapshot_log_.reset(nullptr);
@@ -429,9 +430,7 @@ IOStatus ZenFS::RollMetaZoneAsync() {
               "Could not write snapshot when rolling to a new snapshpt log zone");
         std::cout << "Failed writing a new snapshot\n";
 
-        // TODO: wait for background worker refactor finishes
-        //return IOStatus::IOError("Failed writing a new snapshot");
-        return false;
+        return IOStatus::IOError("Failed writing a new snapshot");
       }
 
       // reset old op log zones to empty state
@@ -441,14 +440,10 @@ IOStatus ZenFS::RollMetaZoneAsync() {
           s.ToString().c_str());
         std::cout << "Failed to reset old op zone. " + s.ToString() + "\n";
 
-        // TODO: wait for background worker refactor finishes
-        //return Status::IOError("Failed to reset old op zone. " + s.ToString());
-        return false;
+        return IOStatus::IOError("Failed to reset old op zone. " + s.ToString());
       }
 
-      // TODO: wait for background worker refactor finishes
-      //return Status::OK();
-      return true;
+      return IOStatus::OK();
     });
   }
 
