@@ -290,7 +290,7 @@ IOStatus ZenFS::RollSnapshotZone() {
   LatencyHistGuard guard(&zbd_->roll_latency_reporter_);
   zbd_->roll_qps_reporter_.AddCount(1);
 
-  new_snapshot_log_zone = zbd_->AllocateMetaZone();
+  new_snapshot_log_zone = zbd_->AllocateSnapshotZone();
 
   if (!new_snapshot_log_zone) {
     assert(false);  // TMP
