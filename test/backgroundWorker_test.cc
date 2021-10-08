@@ -36,11 +36,9 @@ void reset_zone_numbers_vec_and_sum() {
 }
 
 // Assume this arg contains zone number that you wanna operate with, which is a int
-int sum_zone_number() {
+int sum_zone_number(int zone_number) {
   int elapsed_time = rand() % 1000;
   std::this_thread::sleep_for(std::chrono::microseconds(elapsed_time));
-  // Get the correct type manually
-  int zone_number = *(int*) arg;
   // Do the job with the arg brings in.
   actual_zone_number_sum += zone_number;
 
@@ -81,7 +79,17 @@ int test_sum_in_background_worker() {
       ));
     }
 
-    bg_worker.SubmitJob(sum_zone_number);
+    // if operation is failed (return 1), print fail
+    std::function<void(bool)> error_handler_sum = [](int ret) {
+      if (ret != 0) {
+        std::cout << "sum failed!\n";
+      }
+    };
+
+    for (int i = 0; i < zone_numbers.size(); i++) {
+      bg_worker.SubmitJob(std::make_unique<GeneralJob<int, int>>(
+          &sum_zone_number, zone_numbers[i], error_handler_sum));
+    }
   }
 
   const int expected_zone_number_sum =
