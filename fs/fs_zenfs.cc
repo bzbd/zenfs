@@ -226,7 +226,6 @@ ZenFS::~ZenFS() {
   zbd_->LogZoneUsage();
   LogFiles();
 
-  zbd_->meta_worker_->Terminate();
   op_log_.reset(nullptr);
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   snapshot_log_.reset(nullptr);
@@ -514,7 +513,11 @@ IOStatus ZenFS::PersistSnapshot(ZenMetaLog* meta_writer) {
   files_mtx_.lock();
   metadata_sync_mtx_.lock();
 
+#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+  s = WriteSnapshot(meta_writer);
+#else
   s = WriteSnapshotLocked(meta_writer);
+#endif
   if (s == IOStatus::NoSpace()) {
     Info(logger_, "Current meta zone full, rolling to next meta zone");
     s = RollMetaZone();

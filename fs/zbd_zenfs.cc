@@ -652,6 +652,11 @@ void ZonedBlockDevice::LogZoneUsage() {
 }
 
 ZonedBlockDevice::~ZonedBlockDevice() {
+  
+#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+  meta_worker_->Terminate();
+#endif
+
   for (const auto z : op_zones) {
     delete z;
   }
