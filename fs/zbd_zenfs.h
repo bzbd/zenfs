@@ -90,32 +90,46 @@ class Zone {
   void CloseWR(); /* Done writing */
 };
 
+// Abstract class as interface.
+// operator() must be overrided in order to execute the function.
 class BackgroundJob {
  public:
-  BackgroundJob(std::function<int(void *)> fn, void *arg)
-       : fn_(fn), arg_(arg) {}
-   std::function<int(void *)> fn_;
-  void *arg_;
-  virtual void operator()() { fn_(arg_); }
+  virtual void operator()() = 0;
   virtual ~BackgroundJob() {}
 };
 
-class ErrorHandlingBGJob : public BackgroundJob {
+// For simple jobs that needs no return value nor argument.
+class SimpleJob : public BackgroundJob {
  public:
-  ErrorHandlingBGJob(std::function<int(void *)> fn, void *arg,
-                      std::function<void(int)> handler)
-       : BackgroundJob(fn, arg), handler_(handler) {}
-   ErrorHandlingBGJob(std::function<int(void *)> fn, void *arg,
-                      std::function<void(int)> &&handler)
-       : BackgroundJob(fn, arg), handler_(handler) {}
-   std::function<void(int)> handler_;
-   virtual void operator()() override { handler_(fn_(arg_)); }
+  std::function<void()> fn_;
+  // No default allowed.
+  SimpleJob() = delete;
+  SimpleJob(std::function<void()> fn) : fn_(fn) {}
+  virtual void operator()() override { fn_(); }
+  virtual ~SimpleJob() {}
+};
+
+template<typename ARG_T, typename RET_T>
+class GeneralJob : public BackgroundJob {
+ public:
+  // Job requires argument and return value for error handling
+  std::function<RET_T(ARG_T)> fn_;
+  // Argument for execution
+  ARG_T arg_;
+  // Error handler
+  std::function<void(RET_T)> hdl_;
+  // No default allowed
+  GeneralJob() = delete;
+  GeneralJob(std::function<RET_T(ARG_T)> fn, ARG_T arg,
+             std::function<void(RET_T)> hdl) : fn_(fn), arg_(arg), hdl_(hdl) {}
+  virtual void operator()() override { hdl_(fn_(arg_)); }
+  virtual ~GeneralJob() {}
 };
 
 class BackgroundWorker {
   enum WorkingState { kWaiting = 0, kRunning, kTerminated } state_;
   std::thread worker_;
-  std::list<BackgroundJob> jobs_;
+  std::list<std::unique_ptr<BackgroundJob>> jobs_;
   std::unique_ptr<BackgroundJob> job_now_;
   std::mutex job_mtx_;
   std::condition_variable job_cv_;
@@ -127,9 +141,12 @@ class BackgroundWorker {
   void Run();
   void Terminate();
   void ProcessJobs();
-  void SubmitJob(std::function<int(void *)> fn, void *arg);
-  void SubmitJob(BackgroundJob &&job);
+  // For simple jobs that could be handled in a lambda function.
+  void SubmitJob(std::function<void()> fn);
+  // For derived jobs which needs arguments
+  void SubmitJob(std::unique_ptr<BackgroundJob>&& job);
 };
+
 
 class ZonedBlockDevice {
  private:

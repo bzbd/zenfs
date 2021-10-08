@@ -301,7 +301,7 @@ BackgroundWorker::~BackgroundWorker() {
 
   worker_.join();
   for (auto& job : jobs_) {
-    job();
+    (*job)();
   }
 }
 
@@ -321,28 +321,27 @@ void BackgroundWorker::ProcessJobs() {
   while (true) {
     {
       std::unique_lock<std::mutex> lk(job_mtx_);
-
       job_cv_.wait(lk, [this](){return !jobs_.empty() || state_ == kTerminated;});
-      if (state_ == kTerminated && jobs_.empty()) {
+      if (state_ == kTerminated) {
         return;
       }
-
-      job_now_.reset(new BackgroundJob(jobs_.front()));
+      job_now_.swap(jobs_.front());
       jobs_.pop_front();
     }
     (*job_now_)();
   }
 }
 
-void BackgroundWorker::SubmitJob(std::function<int(void*)> fn, void* arg) {
+void BackgroundWorker::SubmitJob(std::function<void()> fn) {
   std::unique_lock<std::mutex> lk(job_mtx_);
-  jobs_.emplace_back(fn, arg);
+  jobs_.push_back(std::make_unique<SimpleJob>(fn));
   job_cv_.notify_one();
 }
 
-void BackgroundWorker::SubmitJob(BackgroundJob&& job) {
+void BackgroundWorker::SubmitJob(std::unique_ptr<BackgroundJob>&& job) {
   std::unique_lock<std::mutex> lk(job_mtx_);
-  jobs_.emplace_back(job);
+  jobs_.push_back(std::move(job));
+  job_cv_.notify_one();
 }
 
 ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger> logger)
