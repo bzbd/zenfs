@@ -36,7 +36,7 @@ void reset_zone_numbers_vec_and_sum() {
 }
 
 // Assume this arg contains zone number that you wanna operate with, which is a int
-int sum_zone_number(void* arg) {
+int sum_zone_number() {
   int elapsed_time = rand() % 1000;
   std::this_thread::sleep_for(std::chrono::microseconds(elapsed_time));
   // Get the correct type manually
@@ -80,6 +80,8 @@ int test_sum_in_background_worker() {
         executor, zone_numbers[i], error_handler
       ));
     }
+
+    bg_worker.SubmitJob(sum_zone_number);
   }
 
   const int expected_zone_number_sum =
