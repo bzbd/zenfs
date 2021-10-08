@@ -44,7 +44,7 @@ int sum_zone_number(int zone_number) {
 
   // return value shows is this operation successfully done or not,
   // most commonly, 0 stands for success, other stands for failed,
-  // For jobs that could failed, using the errorhandlingbgjob which 
+  // For jobs that could failed, using the errorhandlingbgjob which
   // will get this return value and process error handling.
   return 0;
 }
@@ -54,35 +54,11 @@ int test_sum_in_background_worker() {
 
   {
     BackgroundWorker bg_worker;
-    // Submit a simple job using a lambda function.
-    bg_worker.SubmitJob([&](){
-      std::cout << 42 << std::endl;
-    });
 
-    // Submit the job take zone number as argument.
-    std::function<bool(int)> executor = [](int arg) {
-      std::cout << arg << " : ";
-      return arg % 7 == 0; 
-    };
-
-    // if referenced zone number can be devided by 7, print VERITAS.
-    std::function<void(bool)> error_handler = [](bool ret) {
-      if (ret) {
-        std::cout << "!!!VERITAS!!!";
-      }
-      std::cout << std::endl;
-    };
-
-    for (int i = 0; i < zone_numbers.size(); i++) {
-      bg_worker.SubmitJob(std::make_unique<GeneralJob<int, bool>>(
-        executor, zone_numbers[i], error_handler
-      ));
-    }
-
-    // if operation is failed (return 1), print fail
-    std::function<void(bool)> error_handler_sum = [](int ret) {
+    // if add failed (return 1), print error
+    std::function<void(int)> error_handler_sum = [](int ret) {
       if (ret != 0) {
-        std::cout << "sum failed!\n";
+        std::cout << "add failed!\n";
       }
     };
 
@@ -99,14 +75,45 @@ int test_sum_in_background_worker() {
 
   return 0;
 }
+
+int test_background_worker_usage() {
+  BackgroundWorker bg_worker;
+  // Submit a simple job using a lambda function.
+  bg_worker.SubmitJob([&](){
+    std::cout << 42 << std::endl;
+  });
+
+  // Submit the job take zone number as argument.
+  std::function<bool(int)> executor = [](int arg) {
+    std::cout << arg << " : ";
+    return arg % 7 == 0;
+  };
+
+  // if referenced zone number can be devided by 7, print VERITAS.
+  std::function<void(bool)> error_handler = [](bool ret) {
+    if (ret) {
+      std::cout << "!!!VERITAS!!!";
+    }
+    std::cout << std::endl;
+  };
+
+  for (int i = 0; i < zone_numbers.size(); i++) {
+    bg_worker.SubmitJob(std::make_unique<GeneralJob<int, bool>>(
+        executor, zone_numbers[i], error_handler
+    ));
+  }
+}
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char **argv) {
   gflags::SetUsageMessage(std::string("\nUSAGE:\n") + std::string(argv[0]) +
-                            +" <command> [OPTIONS]...\nCommands: mkfs, list, "
-                             "ls-uuid, df, backup, restore");
+                          +" <command> [OPTIONS]...\nCommands: mkfs, list, "
+                           "ls-uuid, df, backup, restore");
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  return ROCKSDB_NAMESPACE::test_sum_in_background_worker();
+  ROCKSDB_NAMESPACE::test_sum_in_background_worker();
+  ROCKSDB_NAMESPACE::test_background_worker_usage();
+
+  return 0;
 }
