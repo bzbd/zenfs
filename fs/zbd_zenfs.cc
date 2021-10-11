@@ -120,7 +120,9 @@ IOStatus Zone::Reset() {
 
   ret = zbd_report_zones(zbd_->GetReadFD(), start_, zone_sz, ZBD_RO_ALL, &z, &report);
 
-  if (ret || (report != 1)) return IOStatus::IOError("Zone report failed\n");
+  if (ret || (report != 1)) {
+    return IOStatus::IOError("Zone report failed\n");
+  }
 
   if (zbd_zone_offline(&z))
     capacity_ = 0;
@@ -652,11 +654,6 @@ void ZonedBlockDevice::LogZoneUsage() {
 }
 
 ZonedBlockDevice::~ZonedBlockDevice() {
-  
-#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
-  meta_worker_->Terminate();
-#endif
-
   for (const auto z : op_zones) {
     delete z;
   }
