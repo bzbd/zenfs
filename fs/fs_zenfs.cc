@@ -412,7 +412,7 @@ IOStatus ZenFS::RollMetaZoneAsync() {
   }
 
   {
-    zbd_->meta_worker_->SubmitJob([&, old_op_log = std::move(old_op_log)]() {
+    zbd_->meta_worker_->SubmitJob([&, old_op_log]() {
       IOStatus s;
       /* close write for old op log zones*/
       auto old_op_zone = old_op_log->GetZone();
@@ -1283,6 +1283,8 @@ Status ZenFS::Mount(bool readonly) {
     snapshot_log_ = std::move(log);
     break;
   }
+
+  assert(snapshot_log_ != nullptr);
 
   if (!snapshot_recovery_ok) {
     return Status::IOError("Failed to mount filesystem due to "

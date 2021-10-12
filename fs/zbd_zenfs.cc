@@ -654,6 +654,9 @@ void ZonedBlockDevice::LogZoneUsage() {
 }
 
 ZonedBlockDevice::~ZonedBlockDevice() {
+
+  meta_worker_.reset(nullptr);
+
   for (const auto z : op_zones) {
     delete z;
   }

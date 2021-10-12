@@ -297,7 +297,7 @@ class ZonedBlockDevice {
   DataReporter active_zones_reporter_;
   DataReporter open_zones_reporter_;
 
-  std::shared_ptr<BackgroundWorker> meta_worker_;
+  std::unique_ptr<BackgroundWorker> meta_worker_;
 
  private:
   std::string ErrorToString(int err);
