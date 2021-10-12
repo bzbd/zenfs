@@ -703,16 +703,11 @@ Zone *ZonedBlockDevice::AllocateMetaZone() {
 
   for (const auto z : op_zones) {
     /* If the zone is not used, reset and use it */
-    if (!z->IsUsed()) {
-      if (!z->IsEmpty()) {
-        if (!z->Reset().ok()) {
-          Warn(logger_, "Failed resetting zone!");
-          continue;
-        }
+      if (z->IsEmpty()) {
+        return z;
       }
-      return z;
-    }
   }
+
   return nullptr;
 }
 
@@ -722,15 +717,9 @@ Zone *ZonedBlockDevice::AllocateSnapshotZone() {
 
   for (const auto z : snapshot_zones) {
     /* If the zone is not used, reset and use it */
-    if (!z->IsUsed()) {
-      if (!z->IsEmpty()) {
-        if (!z->Reset().ok()) {
-          Warn(logger_, "Failed resetting zone!");
-          continue;
-        }
+      if (z->IsEmpty()) {
+        return z;
       }
-      return z;
-    }
   }
 
   return nullptr;
