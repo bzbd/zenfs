@@ -2,12 +2,10 @@
 #include <fcntl.h>
 #include <gflags/gflags.h>
 #include <rocksdb/file_system.h>
-#include <third-party/zenfs/fs/fs_zenfs.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
 #include <atomic>
-#include <boost/fiber/buffered_channel.hpp>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -17,13 +15,15 @@
 #include <streambuf>
 #include <thread>
 
+#include <fs/fs_zenfs.h>
+
 using GFLAGS_NAMESPACE::ParseCommandLineFlags;
 using GFLAGS_NAMESPACE::RegisterFlagValidator;
 using GFLAGS_NAMESPACE::SetUsageMessage;
 
 DEFINE_string(zbd, "", "Path to a zoned block device.");
 DEFINE_string(aux_path, "",
-"Path for auxiliary file storage (log and lock files).");
+              "Path for auxiliary file storage (log and lock files).");
 DEFINE_bool(force, false, "Force file system creation.");
 DEFINE_string(path, "", "File path");
 DEFINE_int32(finish_threshold, 0, "Finish used zones if less than x% left");
@@ -32,9 +32,10 @@ DEFINE_string(backup_path, "", "Path to backup files");
 DEFINE_int32(max_active_zones, 0, "Max active zone limit");
 DEFINE_int32(max_open_zones, 0, "Max active zone limit");
 
-bool find_sub_string(std::string const& inputString, std::string const& subString) {
+bool find_sub_string(std::string const &inputString,
+                     std::string const &subString) {
   std::size_t found = inputString.find(subString);
-  if (found!=std::string::npos) {
+  if (found != std::string::npos) {
     return false;
   }
 
@@ -59,7 +60,8 @@ ZonedBlockDevice *zbd_open(bool readonly, std::shared_ptr<Logger> logger) {
   return zbd;
 }
 
-Status zenfs_mount(ZonedBlockDevice *zbd, ZenFS **zenFS, bool readonly, std::shared_ptr<Logger> logger) {
+Status zenfs_mount(ZonedBlockDevice *zbd, ZenFS **zenFS, bool readonly,
+                   std::shared_ptr<Logger> logger) {
   Status s;
 
   *zenFS = new ZenFS(zbd, FileSystem::Default(), logger);
@@ -82,4 +84,4 @@ static std::string GetLogFilename(std::string bdev) {
 
   return ss.str();
 }
-}
+}  // namespace ROCKSDB_NAMESPACE

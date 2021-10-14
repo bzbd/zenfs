@@ -150,6 +150,12 @@ class ZenFS : public FileSystemWrapper {
     kEndRecord = 4,
   };
 
+  enum RecoverType : uint8_t {
+    kBOTH = 1,
+    kSNAPSHOT = 2,
+    kOPLOG = 3,
+  };
+
   void LogFiles();
   void ClearFiles();
   IOStatus WriteSnapshotLocked(ZenMetaLog* meta_log);
@@ -165,11 +171,11 @@ class ZenFS : public FileSystemWrapper {
   void EncodeSnapshotTo(std::string* output);
   void EncodeFileDeletionTo(ZoneFile* zoneFile, std::string* output);
 
-  Status DecodeSnapshotFrom(Slice* input, bool cache_files);
+  Status DecodeSnapshotFrom(Slice* input);
   Status DecodeFileUpdateFrom(Slice* slice);
   Status DecodeFileDeletionFrom(Slice* slice);
 
-  Status RecoverFrom(ZenMetaLog* log);
+  Status RecoverFrom(ZenMetaLog* log, RecoverType type = RecoverType::kBOTH);
   Status RecoverFromSnapshotZone(ZenMetaLog* log);
   Status RecoverFromOpLogZone(ZenMetaLog* log);
 
@@ -187,21 +193,24 @@ class ZenFS : public FileSystemWrapper {
   ZoneFile* GetFile(std::string fname);
   IOStatus DeleteFile(std::string fname);
 
-  enum ZenFSZoneTag: uint32_t {
+  enum ZenFSZoneTag : uint32_t {
     kSnapshotZone = 1,
     kOpLogZone = 2,
   };
 
-  Status FindAllValidSuperblocks(ZenFSZoneTag zone_tag,
-    std::vector<std::unique_ptr<Superblock>>& valid_superblocks,
-    std::vector<std::unique_ptr<ZenMetaLog>>& valid_logs,
-    std::vector<Zone*>& valid_zones,
-    std::vector<std::pair<uint32_t, uint32_t>>& seq_map);
+  Status FindAllValidSuperblocks(
+      ZenFSZoneTag zone_tag,
+      std::vector<std::unique_ptr<Superblock>>& valid_superblocks,
+      std::vector<std::unique_ptr<ZenMetaLog>>& valid_logs,
+      std::vector<Zone*>& valid_zones,
+      std::vector<std::pair<uint32_t, uint32_t>>& seq_map);
 
-  Status ResetZone(std::vector<Zone*> const & zones,
-    Zone* reset_zone, std::unique_ptr<ZenMetaLog>* log,
-    std::string const & aux_fs_path, uint32_t const finish_threshold,
-    uint32_t const max_open_limit, uint32_t const max_active_limit);
+  Status ResetZone(std::vector<Zone*> const& zones, Zone* reset_zone,
+                   std::unique_ptr<ZenMetaLog>* log,
+                   std::string const& aux_fs_path,
+                   uint32_t const finish_threshold,
+                   uint32_t const max_open_limit,
+                   uint32_t const max_active_limit);
 
  public:
   explicit ZenFS(ZonedBlockDevice* zbd, std::shared_ptr<FileSystem> aux_fs,
