@@ -154,13 +154,13 @@ class ZonedBlockDevice {
   uint32_t block_sz_;
   uint64_t zone_sz_;
   uint32_t nr_zones_;
-  std::vector<Zone *> io_zones;
-  std::mutex io_zones_mtx;
-  std::mutex wal_zones_mtx;
+  std::vector<Zone *> io_zones_;
+  std::mutex io_zones_mtx_;
+  std::mutex wal_zones_mtx_;
   // meta log zones used to keep track of running record of metadata
-  std::vector<Zone *> op_zones;
+  std::vector<Zone *> op_zones_;
   // snapshot zones used to recover entire file system
-  std::vector<Zone *> snapshot_zones;
+  std::vector<Zone *> snapshot_zones_;
   int read_f_;
   int read_direct_f_;
   int write_f_;
@@ -175,7 +175,7 @@ class ZonedBlockDevice {
   std::atomic<int> fg_request_;
 
   // If a thread is allocating a zone fro WAL files, other
-  // thread shouldn't take `io_zones_mtx` (see AllocateZone())
+  // thread shouldn't take `io_zones_mtx_` (see AllocateZone())
   std::atomic<uint32_t> wal_zone_allocating_{0};
 
   std::atomic<long> active_io_zones_;
@@ -233,8 +233,8 @@ class ZonedBlockDevice {
   uint32_t GetMaxActiveZones() { return max_nr_active_io_zones_ + 1; };
   uint32_t GetMaxOpenZones() { return max_nr_open_io_zones_ + 1; };
 
-  std::vector<Zone *> GetOpZones() { return op_zones; }
-  std::vector<Zone *> GetSnapshotZones() { return snapshot_zones; }
+  std::vector<Zone *> GetOpZones() { return op_zones_; }
+  std::vector<Zone *> GetSnapshotZones() { return snapshot_zones_; }
 
   void SetFinishTreshold(uint32_t threshold) { finish_threshold_ = threshold; }
 

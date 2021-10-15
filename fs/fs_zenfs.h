@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <string>
 #include "io_zenfs.h"
 #include "rocksdb/env.h"
 #include "rocksdb/file_system.h"
@@ -119,6 +120,7 @@ class ZenMetaLog {
 class ZenFS : public FileSystemWrapper {
   ZonedBlockDevice* zbd_;
   std::map<std::string, ZoneFile*> files_;
+  std::map<std::string, ZoneFile*> mirror_;
   std::mutex files_mtx_;
   std::shared_ptr<Logger> logger_;
   std::atomic<uint64_t> next_file_id_;
@@ -127,8 +129,7 @@ class ZenFS : public FileSystemWrapper {
   std::unique_ptr<ZenMetaLog> op_log_;
   std::unique_ptr<ZenMetaLog> snapshot_log_;
   std::mutex metadata_sync_mtx_;
-  std::unique_ptr<Superblock> snapshot_super_block_;
-  std::unique_ptr<Superblock> op_super_block_;
+  std::unique_ptr<Superblock> super_block_;
 
   std::shared_ptr<Logger> GetLogger() { return logger_; }
 
@@ -152,16 +153,12 @@ class ZenFS : public FileSystemWrapper {
 
   void LogFiles();
   void ClearFiles();
-  IOStatus WriteSnapshotLocked(ZenMetaLog* meta_log);
-  IOStatus WriteSnapshot(ZenMetaLog* snapshot_log);
+  IOStatus WriteSnapshotLocked(ZenMetaLog* meta_log, std::string* snapshot);
   IOStatus WriteEndRecord(ZenMetaLog* meta_log);
-  IOStatus RollMetaZone();
-  IOStatus RollSnapshotZone();
   IOStatus RollMetaZoneLocked();
+  IOStatus RollSnapshotZone(std::string* snapshot);
   /* experimental function only! */
-  IOStatus RollMetaZoneAsync();
-  IOStatus PersistSnapshot(ZenMetaLog* meta_writer);
-  IOStatus PersistRecord(std::string record);
+  IOStatus PersistRecord(ZenMetaLog* meta_writer, std::string* record);
   IOStatus SyncFileMetadata(ZoneFile* zoneFile);
 
   void EncodeSnapshotTo(std::string* output);
@@ -177,12 +174,12 @@ class ZenFS : public FileSystemWrapper {
   Status RecoverFromOpLogZone(ZenMetaLog* log);
 
   std::string ToAuxPath(std::string path) {
-    return op_super_block_->GetAuxFsPath() + path;
+    return super_block_->GetAuxFsPath() + path;
   }
 
   std::string ToZenFSPath(std::string aux_path) {
     std::string path = aux_path;
-    path.erase(0, op_super_block_->GetAuxFsPath().length());
+    path.erase(0, super_block_->GetAuxFsPath().length());
     return path;
   }
 

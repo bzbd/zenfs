@@ -44,11 +44,11 @@
  * to roll the log safely. One extra
  * is allocated to cover for one zone going offline.
  */
-#define ZENFS_OP_LOG_ZONES (4)
+#define ZENFS_OP_LOG_ZONES (2)
 
 /* Number of reserved zones for metadata snapshot
  */
-#define ZENFS_SNAPSHOT_ZONES (2)
+#define ZENFS_snapshot_zones_ (2)
 
 /* Minimum of number of zones that makes sense */
 #define ZENFS_MIN_ZONES (32)
@@ -266,14 +266,14 @@ ZoneExtent::ZoneExtent(uint64_t start, uint32_t length, Zone *zone)
     : start_(start), length_(length), zone_(zone) {}
 
 Zone *ZonedBlockDevice::GetIOZone(uint64_t offset) {
-  for (const auto z : io_zones)
+  for (const auto z : io_zones_)
     if (z->start_ <= offset && offset < (z->start_ + zone_sz_)) return z;
   return nullptr;
 }
 
 std::vector<ZoneStat> ZonedBlockDevice::GetStat() {
   std::vector<ZoneStat> stat;
-  for (const auto z : io_zones) {
+  for (const auto z : io_zones_) {
     ZoneStat zone_stat;
     zone_stat.total_capacity = z->max_capacity_;
     zone_stat.write_position = z->wp_;
@@ -463,7 +463,6 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
   Status s;
   uint64_t i = 0;
   uint64_t m = 0;
-  uint64_t snapshot_zones_num = 0;
   int ret;
 
   read_f_ = zbd_open(filename_.c_str(), O_RDONLY, &info);
@@ -529,25 +528,24 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
     /* Only use sequential write required zones */
     if (zbd_zone_type(z) == ZBD_ZONE_TYPE_SWR) {
       if (!zbd_zone_offline(z)) {
-        op_zones.push_back(new Zone(this, z));
+        op_zones_.push_back(new Zone(this, z));
       }
       m++;
     }
   }
 
-#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
+  m = 0;
   // initialize metadata snapshop zones
-  while (snapshot_zones_num < ZENFS_SNAPSHOT_ZONES && i < reported_zones) {
+  while (m < ZENFS_snapshot_zones_ && i < reported_zones) {
     struct zbd_zone *z = &zone_rep[i++];
     /* Only use sequential write required zones */
     if (zbd_zone_type(z) == ZBD_ZONE_TYPE_SWR) {
       if (!zbd_zone_offline(z)) {
-        snapshot_zones.push_back(new Zone(this, z));
+        snapshot_zones_.push_back(new Zone(this, z));
       }
-      snapshot_zones_num++;
+      m++;
     }
   }
-#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
 
   active_io_zones_ = 0;
   open_io_zones_ = 0;
@@ -558,7 +556,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
     if (zbd_zone_type(z) == ZBD_ZONE_TYPE_SWR) {
       if (!zbd_zone_offline(z)) {
         Zone *newZone = new Zone(this, z);
-        io_zones.push_back(newZone);
+        io_zones_.push_back(newZone);
         if (zbd_zone_imp_open(z) || zbd_zone_exp_open(z) || zbd_zone_closed(z)) {
           active_io_zones_++;
           if (zbd_zone_imp_open(z) || zbd_zone_exp_open(z)) {
@@ -591,7 +589,7 @@ void ZonedBlockDevice::NotifyIOZoneClosed() {
 
 uint64_t ZonedBlockDevice::GetFreeSpace() {
   uint64_t free = 0;
-  for (const auto z : io_zones) {
+  for (const auto z : io_zones_) {
     free += z->capacity_;
   }
   return free;
@@ -599,7 +597,7 @@ uint64_t ZonedBlockDevice::GetFreeSpace() {
 
 uint64_t ZonedBlockDevice::GetUsedSpace() {
   uint64_t used = 0;
-  for (const auto z : io_zones) {
+  for (const auto z : io_zones_) {
     used += z->used_capacity_;
   }
   return used;
@@ -607,7 +605,7 @@ uint64_t ZonedBlockDevice::GetUsedSpace() {
 
 uint64_t ZonedBlockDevice::GetReclaimableSpace() {
   uint64_t reclaimable = 0;
-  for (const auto z : io_zones) {
+  for (const auto z : io_zones_) {
     if (z->IsFull()) reclaimable += (z->max_capacity_ - z->used_capacity_);
   }
   return reclaimable;
@@ -618,9 +616,9 @@ void ZonedBlockDevice::LogZoneStats() {
   uint64_t reclaimable_capacity = 0;
   uint64_t reclaimables_max_capacity = 0;
   uint64_t active = 0;
-  // io_zones_mtx.lock();
+  // io_zones_mtx_.lock();
 
-  for (const auto z : io_zones) {
+  for (const auto z : io_zones_) {
     used_capacity += z->used_capacity_;
 
     if (z->used_capacity_) {
@@ -640,11 +638,11 @@ void ZonedBlockDevice::LogZoneStats() {
        time(NULL) - start_time_, used_capacity / MB, reclaimable_capacity / MB,
        100 * reclaimable_capacity / reclaimables_max_capacity, active, active_io_zones_.load(), open_io_zones_.load());
 
-  // io_zones_mtx.unlock();
+  // io_zones_mtx_.unlock();
 }
 
 void ZonedBlockDevice::LogZoneUsage() {
-  for (const auto z : io_zones) {
+  for (const auto z : io_zones_) {
     int64_t used = z->used_capacity_;
 
     if (used > 0) {
@@ -657,17 +655,17 @@ ZonedBlockDevice::~ZonedBlockDevice() {
 
   meta_worker_.reset(nullptr);
 
-  for (const auto z : op_zones) {
+  for (const auto z : op_zones_) {
     delete z;
   }
 
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
-  for (const auto z : snapshot_zones) {
+  for (const auto z : snapshot_zones_) {
     delete z;
   }
 #endif
 
-  for (const auto z : io_zones) {
+  for (const auto z : io_zones_) {
     delete z;
   }
 
@@ -700,12 +698,11 @@ unsigned int GetLifeTimeDiff(Env::WriteLifeTimeHint zone_lifetime, Env::WriteLif
 Zone *ZonedBlockDevice::AllocateMetaZone() {
   LatencyHistGuard guard(&meta_alloc_latency_reporter_);
   meta_alloc_qps_reporter_.AddCount(1);
-
-  for (const auto z : op_zones) {
-    /* If the zone is not used, reset and use it */
-      if (z->IsEmpty()) {
-        return z;
-      }
+  
+  for (const auto z : op_zones_) {
+    if (z->IsEmpty()) {
+      return z;
+    }
   }
 
   return nullptr;
@@ -715,11 +712,10 @@ Zone *ZonedBlockDevice::AllocateSnapshotZone() {
   LatencyHistGuard guard(&meta_alloc_latency_reporter_);
   meta_alloc_qps_reporter_.AddCount(1);
 
-  for (const auto z : snapshot_zones) {
-    /* If the zone is not used, reset and use it */
-      if (z->IsEmpty()) {
-        return z;
-      }
+  for (const auto z : snapshot_zones_) {
+    if (z->IsEmpty()) {
+      return z;
+    }
   }
 
   return nullptr;
@@ -728,7 +724,7 @@ Zone *ZonedBlockDevice::AllocateSnapshotZone() {
 void ZonedBlockDevice::ResetUnusedIOZones() {
   const std::lock_guard<std::mutex> lock(zone_resources_mtx_);
   /* Reset any unused zones */
-  for (const auto z : io_zones) {
+  for (const auto z : io_zones_) {
     if (!z->IsUsed() && !z->IsEmpty()) {
       if (!z->IsFull()) active_io_zones_--;
       if (!z->Reset().ok()) Warn(logger_, "Failed reseting zone");
@@ -760,7 +756,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   // For general data, we need both two locks, so the general data thread
   // can give up lock to WAL thread.
   if (!is_wal) {
-    io_zones_mtx.lock();
+    io_zones_mtx_.lock();
   } else {
     wal_zone_allocating_++;
   }
@@ -779,7 +775,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   }
 
   // For general files, it needs both io mutex & wal mutex.
-  wal_zones_mtx.lock();
+  wal_zones_mtx_.lock();
   if (is_wal) {
     wal_zone_allocating_--;
   }
@@ -788,10 +784,10 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   auto t1 = std::chrono::system_clock::now();
 
   /* Reset any unused zones and finish used zones under capacity treshold*/
-  for (int i = 0; !is_wal && i < io_zones.size(); i++) {
+  for (int i = 0; !is_wal && i < io_zones_.size(); i++) {
     // Unlock wal mutex and give wal thread a chance
     if (!is_wal && wal_zone_allocating_.load() > 0) {
-      wal_zones_mtx.unlock();
+      wal_zones_mtx_.unlock();
       while (wal_zone_allocating_.load() > 0) {
         std::this_thread::yield();
         // After we get back, we will re-start the loop in case other thread
@@ -805,9 +801,9 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
         return open_io_zones_.load() < max_nr_open_io_zones_ - reserved_zones;
       });
 
-      wal_zones_mtx.lock();
+      wal_zones_mtx_.lock();
     }
-    const auto z = io_zones[i];
+    const auto z = io_zones_[i];
     if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
       continue;
 
@@ -848,7 +844,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   }
 
   /* Try to fill an already open zone(with the best life time diff) */
-  for (const auto z : io_zones) {
+  for (const auto z : io_zones_) {
     if ((!z->open_for_write_) && (z->used_capacity_ > 0) && !z->IsFull()) {
       unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
       if (diff <= best_diff) {
@@ -880,7 +876,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     */
 
     if (active_io_zones_.load() < max_nr_active_io_zones_) {
-      for (const auto z : io_zones) {
+      for (const auto z : io_zones_) {
         if ((!z->open_for_write_) && z->IsEmpty()) {
           z->lifetime_ = file_lifetime;
           allocated_zone = z;
@@ -901,9 +897,9 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   }
 
 	LogZoneStats();
-  wal_zones_mtx.unlock();
+  wal_zones_mtx_.unlock();
   if (!is_wal) {
-    io_zones_mtx.unlock();
+    io_zones_mtx_.unlock();
   }
 
   auto t5 = std::chrono::system_clock::now();
@@ -943,13 +939,13 @@ void ZonedBlockDevice::EncodeJsonZone(std::ostream &json_stream,
 void ZonedBlockDevice::EncodeJson(std::ostream &json_stream) {
   json_stream << "{";
   json_stream << "\"meta\":";
-  EncodeJsonZone(json_stream, op_zones);
+  EncodeJsonZone(json_stream, op_zones_);
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   json_stream << "\"meta snapshot\":";
-  EncodeJsonZone(json_stream, snapshot_zones);
+  EncodeJsonZone(json_stream, snapshot_zones_);
 #endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   json_stream << ",\"io\":";
-  EncodeJsonZone(json_stream, io_zones);
+  EncodeJsonZone(json_stream, io_zones_);
   json_stream << "}";
 }
 
