@@ -557,7 +557,7 @@ IOStatus ZonedWritableFile::FlushBuffer() {
   if (pad_sz) memset((char*)buffer + buffer_pos, 0x0, pad_sz);
 
   wr_sz = buffer_pos + pad_sz;
-  s = zoneFile_->Append((char*)buffer, wr_sz, buffer_pos, true);
+  s = zoneFile_->Append((char*)buffer, wr_sz, buffer_pos);
   if (!s.ok()) {
     return s;
   }
