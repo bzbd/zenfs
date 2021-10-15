@@ -659,11 +659,9 @@ ZonedBlockDevice::~ZonedBlockDevice() {
     delete z;
   }
 
-#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   for (const auto z : snapshot_zones_) {
     delete z;
   }
-#endif
 
   for (const auto z : io_zones_) {
     delete z;
@@ -940,10 +938,8 @@ void ZonedBlockDevice::EncodeJson(std::ostream &json_stream) {
   json_stream << "{";
   json_stream << "\"meta\":";
   EncodeJsonZone(json_stream, op_zones_);
-#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   json_stream << "\"meta snapshot\":";
   EncodeJsonZone(json_stream, snapshot_zones_);
-#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   json_stream << ",\"io\":";
   EncodeJsonZone(json_stream, io_zones_);
   json_stream << "}";

@@ -228,9 +228,7 @@ ZenFS::~ZenFS() {
   LogFiles();
 
   op_log_.reset(nullptr);
-#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   snapshot_log_.reset(nullptr);
-#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   ClearFiles();
   delete zbd_;
 }
@@ -1115,7 +1113,6 @@ Status ZenFS::FindAllValidSuperblocks(std::vector<Zone*> const & zones,
 Status ZenFS::Mount(bool readonly) {
   Status s;
 
-#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   std::vector<Zone*> snapshot_zones_ = zbd_->GetSnapshotZones();
   std::vector<std::unique_ptr<Superblock>> valid_superblocks_snapshot;
   std::vector<std::unique_ptr<ZenMetaLog>> valid_logs_snapshot;
@@ -1182,8 +1179,6 @@ Status ZenFS::Mount(bool readonly) {
     }
   }
 
-#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
-
   std::vector<Zone*> op_zones_ = zbd_->GetOpZones();
   std::vector<std::unique_ptr<Superblock>> valid_superblocks_op;
   std::vector<std::unique_ptr<ZenMetaLog>> valid_logs_op;
@@ -1210,7 +1205,6 @@ Status ZenFS::Mount(bool readonly) {
     std::string scratch;
     std::unique_ptr<ZenMetaLog> log = std::move(valid_logs_op[i]);
 
-#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
     s = RecoverFromOpLogZone(log.get());
 
     // For the formatted condition, we will not find any op log.
@@ -1222,9 +1216,6 @@ Status ZenFS::Mount(bool readonly) {
       op_log_ = std::move(log);
       break;
     }
-#else
-    s = RecoverFrom(log.get());
-#endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
 
     if (!s.ok()) {
       if (s.IsNotFound()) {
@@ -1289,14 +1280,14 @@ Status ZenFS::Mount(bool readonly) {
       Error(logger_, "Failed to roll metadata zone.");
       return s;
     }
-#ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
-    s = RollSnapshotZone();
+    std::string snapshot;
+    WriteSnapshotLocked(snapshot_log_.get(), &snapshot);
+    s = RollSnapshotZone(&snapshot);
     if (!s.ok()) {
       files_mtx_.unlock();
       Error(logger_, "Failed to roll snapshot zone.");
       return s;
     }
-#endif
     files_mtx_.unlock();
   }
 
@@ -1380,6 +1371,11 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
 
   s = ResetZone(zbd_->GetSnapshotZones(), reset_zone, &snapshot_log_, aux_fs_path,
       finish_threshold, max_open_limit, max_active_limit);
+
+  // Write an empty snapshot as start point
+  std::string snapshot;
+  EncodeSnapshotTo(&snapshot);
+  snapshot_log_->AddRecord(snapshot);
 
   if (!s.ok()) {
     Error(logger_, "Failed to reset snapshot: %s", s.ToString().c_str());
