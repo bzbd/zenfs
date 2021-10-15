@@ -1174,7 +1174,7 @@ Status ZenFS::Mount(bool readonly) {
   return Status::OK();
 }
 
-Status ZenFS::ResetZone(std::vector<Zone*> const& zones, Zone* reset_zone,
+Status ZenFS::InitMetaZone(std::vector<Zone*> const& zones, Zone* reset_zone,
                         std::unique_ptr<ZenMetaLog>* log,
                         std::string const& aux_fs_path,
                         uint32_t const finish_threshold,
@@ -1246,7 +1246,7 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
   std::unique_ptr<ZenMetaLog> snapshot_log;
   Zone* reset_snapshot_zone = nullptr;
 
-  s = ResetZone(snapshot_zones, reset_snapshot_zone, &snapshot_log, aux_fs_path,
+  s = InitMetaZone(snapshot_zones, reset_snapshot_zone, &snapshot_log, aux_fs_path,
                 finish_threshold, max_open_limit, max_active_limit);
 
   if (!s.ok()) {
@@ -1262,7 +1262,7 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
   }
 #endif  // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
 
-  s = ResetZone(op_zones, reset_op_log_zone, &op_log, aux_fs_path,
+  s = InitMetaZone(op_zones, reset_op_log_zone, &op_log, aux_fs_path,
                 finish_threshold, max_open_limit, max_active_limit);
 
   if (!s.ok()) {
@@ -1270,7 +1270,7 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
     return Status::IOError("Failed to reset op log");
   }
 
-#if !defined(WITH_ZENFS_ASYNC_METAZONE_ROLLOVER)
+#ifndef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   /* Write an empty snapshot to make the metadata zone valid */
   s = PersistSnapshot(op_log.get());
   if (!s.ok()) {

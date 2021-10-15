@@ -205,7 +205,7 @@ class ZenFS : public FileSystemWrapper {
       std::vector<Zone*>& valid_zones,
       std::vector<std::pair<uint32_t, uint32_t>>& seq_map);
 
-  Status ResetZone(std::vector<Zone*> const& zones, Zone* reset_zone,
+  Status InitMetaZone(std::vector<Zone*> const& zones, Zone* reset_zone,
                    std::unique_ptr<ZenMetaLog>* log,
                    std::string const& aux_fs_path,
                    uint32_t const finish_threshold,
