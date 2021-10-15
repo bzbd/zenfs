@@ -1174,13 +1174,10 @@ Status ZenFS::Mount(bool readonly) {
   return Status::OK();
 }
 
-Status ZenFS::InitMetaZone(std::vector<Zone*> const& zones, Zone* reset_zone,
-                        std::unique_ptr<ZenMetaLog>* log,
-                        std::string const& aux_fs_path,
-                        uint32_t const finish_threshold,
-                        uint32_t const max_open_limit,
-                        uint32_t const max_active_limit) {
+Status ZenFS::InitMetaZone(
+    std::vector<Zone*> const& zones, std::unique_ptr<ZenMetaLog>* log) {
   Status s;
+  Zone* reset_zone = nullptr;
 
   for (const auto z : zones) {
     if (z->Reset().ok()) {
@@ -1195,7 +1192,14 @@ Status ZenFS::InitMetaZone(std::vector<Zone*> const& zones, Zone* reset_zone,
   }
 
   log->reset(new ZenMetaLog(zbd_, reset_zone));
+}
 
+Status ZenFS::CreateEmptySuperBlock(std::unique_ptr<ZenMetaLog>* log,
+                                    std::string const& aux_fs_path,
+                                    uint32_t const finish_threshold,
+                                    uint32_t const max_open_limit,
+                                    uint32_t const max_active_limit) {
+  Status s;
   Superblock* super = new Superblock(zbd_, aux_fs_path, finish_threshold,
                                      max_open_limit, max_active_limit);
   std::string super_string;
@@ -1244,14 +1248,20 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
   std::vector<Zone*> snapshot_zones = zbd_->GetSnapshotZones();
   std::unique_ptr<ZenMetaLog> snapshot_log;
-  Zone* reset_snapshot_zone = nullptr;
 
-  s = InitMetaZone(snapshot_zones, reset_snapshot_zone, &snapshot_log, aux_fs_path,
-                finish_threshold, max_open_limit, max_active_limit);
-
+  s = InitMetaZone(snapshot_zones, &snapshot_log);
   if (!s.ok()) {
     Error(logger_, "Failed to reset snapshot: %s", s.ToString().c_str());
     return Status::IOError("Failed to reset snapshot");
+  }
+
+  s = CreateEmptySuperBlock(&snapshot_log, aux_fs_path, finish_threshold,
+                            max_open_limit, max_active_limit);
+  if (!s.ok()) {
+    Error(logger_, "Failed to create empty super block in snapshot: %s",
+          s.ToString().c_str());
+    return Status::IOError("create empty super block in snapshot: " +
+                           s.ToString());
   }
 
   /* Write an empty snapshot to make the snapshot zone valid */
@@ -1262,12 +1272,19 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
   }
 #endif  // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
 
-  s = InitMetaZone(op_zones, reset_op_log_zone, &op_log, aux_fs_path,
-                finish_threshold, max_open_limit, max_active_limit);
-
+  s = InitMetaZone(op_zones, &op_log);
   if (!s.ok()) {
     Error(logger_, "Failed to reset op log: %s", s.ToString().c_str());
     return Status::IOError("Failed to reset op log");
+  }
+
+  s = CreateEmptySuperBlock(&op_log, aux_fs_path, finish_threshold,
+                            max_open_limit, max_active_limit);
+  if (!s.ok()) {
+    Error(logger_, "Failed to create empty super block in op log zone: %s",
+          s.ToString().c_str());
+    return Status::IOError("create empty super block in op log zone: " +
+                           s.ToString());
   }
 
 #ifndef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER

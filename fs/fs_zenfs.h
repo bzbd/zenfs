@@ -205,12 +205,14 @@ class ZenFS : public FileSystemWrapper {
       std::vector<Zone*>& valid_zones,
       std::vector<std::pair<uint32_t, uint32_t>>& seq_map);
 
-  Status InitMetaZone(std::vector<Zone*> const& zones, Zone* reset_zone,
-                   std::unique_ptr<ZenMetaLog>* log,
-                   std::string const& aux_fs_path,
-                   uint32_t const finish_threshold,
-                   uint32_t const max_open_limit,
-                   uint32_t const max_active_limit);
+  Status InitMetaZone(
+      std::vector<Zone*> const& zones, std::unique_ptr<ZenMetaLog>* log);
+
+  Status CreateEmptySuperBlock(std::unique_ptr<ZenMetaLog>* log,
+                               std::string const& aux_fs_path,
+                               uint32_t const finish_threshold,
+                               uint32_t const max_open_limit,
+                               uint32_t const max_active_limit);
 
  public:
   explicit ZenFS(ZonedBlockDevice* zbd, std::shared_ptr<FileSystem> aux_fs,
