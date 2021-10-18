@@ -155,7 +155,7 @@ class ZenFS : public FileSystemWrapper {
   void ClearFiles();
   IOStatus WriteSnapshotLocked(ZenMetaLog* meta_log, std::string* snapshot);
   IOStatus WriteEndRecord(ZenMetaLog* meta_log);
-  IOStatus RollMetaZoneLocked();
+  IOStatus RollMetaZoneLocked(bool async);
   IOStatus RollSnapshotZone(std::string* snapshot);
   /* experimental function only! */
   IOStatus PersistRecord(ZenMetaLog* meta_writer, std::string* record);
@@ -186,12 +186,6 @@ class ZenFS : public FileSystemWrapper {
   ZoneFile* GetFileInternal(std::string fname);
   ZoneFile* GetFile(std::string fname);
   IOStatus DeleteFile(std::string fname);
-
-  Status FindAllValidSuperblocks(std::vector<Zone*> const & zones,
-    std::vector<std::unique_ptr<Superblock>>& valid_superblocks,
-    std::vector<std::unique_ptr<ZenMetaLog>>& valid_logs,
-    std::vector<Zone*>& valid_zones,
-    std::vector<std::pair<uint32_t, uint32_t>>& seq_map);
 
   Status ResetZone(std::vector<Zone*> const & zones,
     Zone* reset_zone, std::unique_ptr<ZenMetaLog>* log,

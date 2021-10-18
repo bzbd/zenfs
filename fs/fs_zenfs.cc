@@ -4,6 +4,7 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
+#include <cstddef>
 #include <string>
 #if !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 
@@ -116,7 +117,7 @@ IOStatus ZenMetaLog::AddRecord(const Slice& slice) {
   assert((phys_sz % bs_) == 0);
 
   ret = posix_memalign((void**)&buffer, sysconf(_SC_PAGESIZE), phys_sz);
-  if (ret) return IOStatus::IOError("Failed to allocate memory");
+  if (ret != 0) return IOStatus::IOError("Failed to allocate memory");
 
   memset(buffer, 0, phys_sz);
 
@@ -332,7 +333,7 @@ IOStatus ZenFS::WriteEndRecord(ZenMetaLog* meta_log) {
 }
 
 /* Assumes the files_mtx_ is held */
-IOStatus ZenFS::RollMetaZoneLocked() {
+IOStatus ZenFS::RollMetaZoneLocked(bool async) {
   Zone *new_op_zone = nullptr;
   IOStatus s;
   LatencyHistGuard guard(&zbd_->roll_latency_reporter_);
@@ -342,7 +343,7 @@ IOStatus ZenFS::RollMetaZoneLocked() {
   std::shared_ptr<ZenMetaLog> old_op_log = std::move(op_log_);
 
   // write snapshot in memory
-  std::shared_ptr<std::string> snapshot;
+  std::shared_ptr<std::string> snapshot(new std::string);
   WriteSnapshotLocked(snapshot_log_.get(), snapshot.get());
   
   // allocate new mete zone
@@ -368,8 +369,7 @@ IOStatus ZenFS::RollMetaZoneLocked() {
                              "new op log zone");
   }
 
-  // submit async job for : 1. Finish & reset old zone. 2. Write Snapshot.
-  zbd_->meta_worker_->SubmitJob([&, old_op_log, snapshot]() {
+  auto RollMetaZoneBackground = [&, old_op_log, snapshot]() {
     IOStatus s;
 
     // process write snapshot
@@ -391,22 +391,31 @@ IOStatus ZenFS::RollMetaZoneLocked() {
     s = old_op_zone->Close();
     if (!s.ok()) {
       Error(logger_, "Failed to close old op zone. Error: %s",
-        s.ToString().c_str());
+            s.ToString().c_str());
       assert(false);
     }
     s = old_op_zone->Finish();
     if (!s.ok()) {
       Error(logger_, "Failed to finish old op zone. Error: %s",
-        s.ToString().c_str());
+            s.ToString().c_str());
       assert(false);
     }
     s = old_op_zone->Reset();
     if (!s.ok()) {
       Error(logger_, "Failed to reset old op zone. Error: %s",
-        s.ToString().c_str());
+            s.ToString().c_str());
       assert(false);
     }
-  });
+  };
+
+
+  if (async) {
+    // Submit async job for : 1. Finish & reset old zone. 2. Write Snapshot.
+    zbd_->meta_worker_->SubmitJob(RollMetaZoneBackground);
+  } else {
+    // Synchronized call for initailization.
+    RollMetaZoneBackground();
+  }
 
   return s;
 }
@@ -417,7 +426,7 @@ IOStatus ZenFS::PersistRecord(ZenMetaLog* meta_writer, std::string* record) {
   s = meta_writer->AddRecord(*record);
   if (s == IOStatus::NoSpace()) {
     Info(logger_, "Current meta zone full, rolling to next meta zone");
-    s = RollMetaZoneLocked();
+    s = RollMetaZoneLocked(true);
     /* After a successfull roll, a complete snapshot has been persisted
      * - no need to write the record update */
   }
@@ -862,134 +871,12 @@ Status ZenFS::DecodeFileDeletionFrom(Slice* input) {
   return Status::OK();
 }
 
-/* find the latest valid snapshot record */
-Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
-  bool found_one_snapshot = false;
-  Slice last_valid_snapshot_record;
-  std::string scratch;
-  uint32_t tag = 0;
-  Slice record;
-  Slice data;
-  Status s;
-  bool done = false;
-
-  while (!done) {
-    IOStatus rs = log->ReadRecord(&record, &scratch);
-    if (!rs.ok()) {
-      Error(logger_, "Read recovery record failed with error: %s",
-            rs.ToString().c_str());
-      return Status::Corruption("ZenFS", "Snapshot corruption");
-    }
-
-    if (!GetFixed32(&record, &tag)) break;
-
-    if (tag == kEndRecord) break;
-
-    if (!GetLengthPrefixedSlice(&record, &data)) {
-      return Status::Corruption("ZenFS", "No recovery record data");
-    }
-
-    switch (tag) {
-      case kCompleteFilesSnapshot:
-        ClearFiles();
-        s = DecodeSnapshotFromAndNoCacheFiles(&data);
-        if (!s.ok()) {
-          Warn(logger_, "Could not decode complete snapshot: %s",
-               s.ToString().c_str());
-          return s;
-        }
-        // found one snapshot record, and
-        // continue to find the latest valid snapshot record
-        found_one_snapshot = true;
-        last_valid_snapshot_record = data;
-        continue;
-
-      default:
-        Warn(logger_, "Unexpected snapshot record tag: %u", tag);
-        return Status::Corruption("ZenFS", "Unexpected tag");
-    }
-  }
-
-  if (found_one_snapshot) {
-    // decode snapshot and cache files
-    s = DecodeSnapshotFrom(&last_valid_snapshot_record);
-
-    if (!s.ok()) {
-      Warn(logger_, "Could not decode complete snapshot: %s",
-           s.ToString().c_str());
-      return s;
-    }
-    return Status::OK();
-  }
-
-  return Status::NotFound("ZenFS", "No snapshot found");
-}
-
-/* find the latest meta log */
-Status ZenFS::RecoverFromOpLogZone(ZenMetaLog* log) {
-  bool found_one_op_log = false;
-  std::string scratch;
-  uint32_t tag = 0;
-  Slice record;
-  Slice data;
-  Status s;
-  bool done = false;
-
-  while (!done) {
-    IOStatus rs = log->ReadRecord(&record, &scratch);
-    if (!rs.ok()) {
-      Error(logger_, "Read recovery record failed with error: %s",
-            rs.ToString().c_str());
-      return Status::Corruption("ZenFS", "op log corruption");
-    }
-
-    if (!GetFixed32(&record, &tag)) break;
-
-    if (tag == kEndRecord) break;
-
-    if (!GetLengthPrefixedSlice(&record, &data)) {
-      return Status::Corruption("ZenFS", "No recovery record data");
-    }
-
-    switch (tag) {
-      case kFileUpdate:
-        s = DecodeFileUpdateFrom(&data);
-        if (!s.ok()) {
-          Warn(logger_, "Could not decode file snapshot: %s",
-               s.ToString().c_str());
-          return s;
-        }
-        found_one_op_log = true;
-        continue;
-
-      case kFileDeletion:
-        s = DecodeFileDeletionFrom(&data);
-        if (!s.ok()) {
-          Warn(logger_, "Could not decode file deletion: %s",
-               s.ToString().c_str());
-          return s;
-        }
-        found_one_op_log = true;
-        continue;
-
-      default:
-        Warn(logger_, "Unexpected op log record tag: %u", tag);
-        return Status::Corruption("ZenFS", "Unexpected tag");
-    }
-  }
-
-  if (found_one_op_log)
-    return Status::OK();
-  else
-    return Status::NotFound("ZenFS", "No op log found");
-}
-
 Status ZenFS::RecoverFrom(ZenMetaLog* log) {
-  bool at_least_one_snapshot = false;
   std::string scratch;
   uint32_t tag = 0;
   Slice record;
   Slice data;
+  Slice last_snapshot;
   Status s;
   bool done = false;
 
@@ -1011,14 +898,13 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 
     switch (tag) {
       case kCompleteFilesSnapshot:
-        ClearFiles();
-        s = DecodeSnapshotFrom(&data);
+        s = DecodeSnapshotFromAndNoCacheFiles(&data);
         if (!s.ok()) {
           Warn(logger_, "Could not decode complete snapshot: %s",
                s.ToString().c_str());
           return s;
         }
-        at_least_one_snapshot = true;
+        last_snapshot = data;
         break;
 
       case kFileUpdate:
@@ -1045,10 +931,11 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
     }
   }
 
-  if (at_least_one_snapshot)
-    return Status::OK();
-  else
-    return Status::NotFound("ZenFS", "No snapshot found");
+  if (!last_snapshot.empty()) {
+    ClearFiles();
+    DecodeSnapshotFrom(&last_snapshot);
+  }
+  return Status::OK();
 }
 
 #define ZENV_URI_PATTERN "zenfs://"
@@ -1056,13 +943,14 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 /* Mount the filesystem by recovering form the latest valid snapshot zone
  * and metadata zone*/
 Status ZenFS::Mount(bool readonly) {
-  std::vector<Zone*> op_zones = zbd_->GetOpZones();
-  if (op_zones.size() < 2) {
-    Error(logger_,
-          "Need at least two non-offline meta zones to open for write");
-    return Status::NotSupported();
-  }
+  std::string scratch;
+  Slice super_record;
+  std::shared_ptr<ZenMetaLog> log;
+  std::shared_ptr<Superblock> super_block;
+  uint32_t max_snapshot_seq = 0, max_op_seq = 0;
+  Status s;
 
+  // Get snapshot zones
   std::vector<Zone*> snapshot_zones = zbd_->GetSnapshotZones();
   if (snapshot_zones.size() < 2) {
     Error(logger_,
@@ -1070,83 +958,67 @@ Status ZenFS::Mount(bool readonly) {
     return Status::NotSupported();
   }
 
-  std::unique_ptr<ZenMetaLog> log;
-  std::string scratch;
-  Slice super_record;
-  std::unique_ptr<Superblock> super_block;
-  uint64_t last_seq = 0;
-  Zone* last_snapshot_zone = nullptr;
+  // Iterating snapshot zones to get last one.
   for (const auto& z : snapshot_zones) {
     log.reset(new ZenMetaLog(zbd_, z));
     if (!log->ReadRecord(&super_record, &scratch).ok()) continue;
     if (super_record.size() == 0) continue;
+    super_block.reset(new Superblock());
+    s = super_block->DecodeFrom(&super_record);
+    if (s.ok()) s = super_block->CompatibleWith(zbd_);
+    if (s.ok() && super_block->GetSeq() > max_snapshot_seq) {
+      max_snapshot_seq = super_block->GetSeq();
+      snapshot_log_.reset(log.get());
+      super_block_.reset(super_block.get());
+    }
+  }
+  
+  if (max_snapshot_seq == 0) {
+    // No avaliable snapshot zone, report error.
+    Error(logger_, "!!!Error : No valid snaphot!!!");
+    return Status::Corruption("Mount", "Error: No valid snaphot.");
   }
 
-  std::vector<std::unique_ptr<Superblock>> valid_superblocks_op;
-  std::vector<std::unique_ptr<ZenMetaLog>> valid_logs_op;
-  std::vector<Zone*> valid_zones_op_log;
-  std::vector<std::pair<uint32_t, uint32_t>> seq_map_op;
+  // Get operation log zones
+  std::vector<Zone*> op_zones = zbd_->GetOpZones();
+  if (op_zones.size() < 2) {
+    Error(logger_,
+          "Need at least two non-offline meta zones to open for write");
+    return Status::NotSupported();
+  }
 
-  s = FindAllValidSuperblocks(op_zones_, valid_superblocks_op,
-      valid_logs_op, valid_zones_op_log, seq_map_op);
+  // Iterating operation log zones to get last one.
+  for (const auto& z : op_zones) {
+    log.reset(new ZenMetaLog(zbd_, z));
+    if (!log->ReadRecord(&super_record, &scratch).ok()) continue;
+    if (super_record.size() == 0) continue;
+    super_block.reset(new Superblock());
+    s = super_block->DecodeFrom(&super_record);
+    if (s.ok()) s = super_block->CompatibleWith(zbd_);
+    if (s.ok() && super_block->GetSeq() > max_op_seq) {
+      max_op_seq = super_block->GetSeq();
+      op_log_.reset(log.get());
+      if (max_op_seq > max_snapshot_seq) super_block_.reset(super_block.get());
+    }
+  }
+
+  if (max_op_seq == 0) {
+    // No avaliable snapshot zone, report error.
+    Error(logger_, "!!!Error : No valid opreation log!!!");
+    return Status::Corruption("Mount", "Error: No valid opreation log.");
+  }
+
+  // Recover snapshot fisrt, then opreation log.
+  s = RecoverFrom(snapshot_log_.get());
   if (!s.ok()) {
-    Error(logger_, "Did not find valid superblock in Op Log zones. Error: %s",
-        s.ToString().c_str());
-    return s;
+    Error(logger_, "!!!Error : Recover snapshot failed!!!");
+    return Status::Corruption("Mount", "Error: Recover snapshot failed.");
   }
-
-  bool op_zone_recovery_ok = false;
-  unsigned int op_zone_recovered_index = 0;
-
-  /* Recover from the zone with the highest superblock sequence number.
-     If that fails go to the previous as we might have crashed when rolling
-     metadata zone.
-  */
-  for (const auto& sm : seq_map_op) {
-    uint32_t i = sm.second;
-    std::string scratch;
-    std::unique_ptr<ZenMetaLog> log = std::move(valid_logs_op[i]);
-
-    s = RecoverFromOpLogZone(log.get());
-
-    // For the formatted condition, we will not find any op log.
-    // So when we scan the last op log zone (i == 0), we will only reach
-    // end of file with no op log zone found.
-    if(s.IsNotFound() && i == 0) {
-      op_zone_recovered_index = i;
-      op_zone_recovery_ok = true;
-      op_log_ = std::move(log);
-      break;
-    }
-
-    if (!s.ok()) {
-      if (s.IsNotFound()) {
-        Warn(logger_,
-             "Did not find a valid op log, trying next op log zone. Error: %s",
-             s.ToString().c_str());
-        continue;
-      }
-
-      Error(logger_, "op log corruption. Error: %s", s.ToString().c_str());
-      return s;
-    }
-
-    op_zone_recovered_index = i;
-    op_zone_recovery_ok = true;
-    op_log_ = std::move(log);
-    break;
+  s = RecoverFrom(op_log_.get());
+  if (!s.ok()) {
+    Error(logger_, "!!!Error : Recover opreation log failed!!!");
+    return Status::Corruption("Mount", "Error: Recover opreation log failed.");
   }
-
-  if (!op_zone_recovery_ok) {
-    Error(logger_, "Failed to mount filesystem due to op log zone recovery: %s"
-        , s.ToString().c_str());
-    return Status::IOError("Failed to mount filesystem due to "
-                           "op log zone recovery " + s.ToString());
-  }
-
-  Info(logger_, "Recovered from zone: %d",
-             (int)valid_zones_op_log[op_zone_recovered_index]->GetZoneNr());
-  super_block_ = std::move(valid_superblocks_op[op_zone_recovered_index]);
 
   zbd_->SetFinishTreshold(super_block_->GetFinishTreshold());
   zbd_->SetMaxActiveZones(super_block_->GetMaxActiveZoneLimit());
@@ -1161,36 +1033,17 @@ Status ZenFS::Mount(bool readonly) {
     return s;
   }
 
-  /* Free up old op log zones, to get ready to roll */
-  for (const auto& sm : seq_map_op) {
-    uint32_t i = sm.second;
-    /* Don't reset the current op log zone */
-    if (i != op_zone_recovered_index) {
-      /* op log zones are not marked as having valid data, so they can be
-       * reset */
-      valid_logs_op[i].reset();
-    }
-  }
-
   if (readonly) {
     Info(logger_, "Mounting READ ONLY");
   } else {
     files_mtx_.lock();
-    s = RollMetaZoneLocked();
+    // Synchronized call.
+    s = RollMetaZoneLocked(false);
+    files_mtx_.unlock();
     if (!s.ok()) {
-      files_mtx_.unlock();
       Error(logger_, "Failed to roll metadata zone.");
       return s;
     }
-    std::string snapshot;
-    WriteSnapshotLocked(snapshot_log_.get(), &snapshot);
-    s = RollSnapshotZone(&snapshot);
-    if (!s.ok()) {
-      files_mtx_.unlock();
-      Error(logger_, "Failed to roll snapshot zone.");
-      return s;
-    }
-    files_mtx_.unlock();
   }
 
   Info(logger_, "Superblock sequence %d", (int)super_block_->GetSeq());
@@ -1274,15 +1127,16 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
   s = ResetZone(zbd_->GetSnapshotZones(), reset_zone, &snapshot_log_, aux_fs_path,
       finish_threshold, max_open_limit, max_active_limit);
 
-  // Write an empty snapshot as start point
-  std::string snapshot;
-  EncodeSnapshotTo(&snapshot);
-  snapshot_log_->AddRecord(snapshot);
-
   if (!s.ok()) {
     Error(logger_, "Failed to reset snapshot: %s", s.ToString().c_str());
     return Status::IOError("Failed to reset snapshot");
   }
+
+  // Write an empty snapshot as start point.
+  std::string snapshot;
+  EncodeSnapshotTo(&snapshot);
+  WriteEndRecord(snapshot_log_.get());
+  snapshot_log_->AddRecord(snapshot);
 
   s = ResetZone(zbd_->GetOpZones(), reset_zone, &op_log_, aux_fs_path,
       finish_threshold, max_open_limit, max_active_limit);
@@ -1291,6 +1145,9 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
     Error(logger_, "Failed to reset op log: %s", s.ToString().c_str());
     return Status::IOError("Failed to reset op log");
   }
+
+  // Write end record as start point.
+  WriteEndRecord(op_log_.get());
 
   Info(logger_, "Empty filesystem created");
   return Status::OK();
