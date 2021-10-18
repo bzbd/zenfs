@@ -48,7 +48,7 @@
 
 /* Number of reserved zones for metadata snapshot
  */
-#define ZENFS_snapshot_zones_ (2)
+#define ZENFS_SNAPSHOT_ZONES (2)
 
 /* Minimum of number of zones that makes sense */
 #define ZENFS_MIN_ZONES (32)
@@ -536,7 +536,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
 
   m = 0;
   // initialize metadata snapshop zones
-  while (m < ZENFS_snapshot_zones_ && i < reported_zones) {
+  while (m < ZENFS_SNAPSHOT_ZONES && i < reported_zones) {
     struct zbd_zone *z = &zone_rep[i++];
     /* Only use sequential write required zones */
     if (zbd_zone_type(z) == ZBD_ZONE_TYPE_SWR) {

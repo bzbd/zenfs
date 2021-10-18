@@ -51,11 +51,11 @@ ZonedBlockDevice *zbd_open(bool readonly) {
   return zbd;
 }
 
-Status zenfs_mount(ZonedBlockDevice *zbd, ZenFS **zenFS, bool readonly) {
+Status zenfs_mount(ZonedBlockDevice *zbd, ZenFS **zenFS, bool readonly, bool formating = false) {
   Status s;
   auto logger = std::make_shared<test::NullLogger>();
   *zenFS = new ZenFS(zbd, FileSystem::Default(), logger);
-  s = (*zenFS)->Mount(readonly);
+  s = (*zenFS)->Mount(readonly, formating);
   if (!s.ok()) {
     delete *zenFS;
     *zenFS = nullptr;
@@ -86,7 +86,7 @@ int zenfs_tool_mkfs() {
   if (zbd == nullptr) return 1;
 
   ZenFS *zenFS;
-  s = zenfs_mount(zbd, &zenFS, false);
+  s = zenfs_mount(zbd, &zenFS, false, true);
   if ((s.ok() || !s.IsNotFound()) && !FLAGS_force) {
     fprintf(
         stderr,

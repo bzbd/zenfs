@@ -164,14 +164,13 @@ class ZenFS : public FileSystemWrapper {
   void EncodeSnapshotTo(std::string* output);
   void EncodeFileDeletionTo(ZoneFile* zoneFile, std::string* output);
 
+  Status TestSnapshotCorrectness(Slice* input);
+  
   Status DecodeSnapshotFrom(Slice* input);
-  Status DecodeSnapshotFromAndNoCacheFiles(Slice* input);
   Status DecodeFileUpdateFrom(Slice* slice);
   Status DecodeFileDeletionFrom(Slice* slice);
 
   Status RecoverFrom(ZenMetaLog* log);
-  Status RecoverFromSnapshotZone(ZenMetaLog* log);
-  Status RecoverFromOpLogZone(ZenMetaLog* log);
 
   std::string ToAuxPath(std::string path) {
     return super_block_->GetAuxFsPath() + path;
@@ -187,17 +186,12 @@ class ZenFS : public FileSystemWrapper {
   ZoneFile* GetFile(std::string fname);
   IOStatus DeleteFile(std::string fname);
 
-  Status ResetZone(std::vector<Zone*> const & zones,
-    Zone* reset_zone, std::unique_ptr<ZenMetaLog>* log,
-    std::string const & aux_fs_path, uint32_t const finish_threshold,
-    uint32_t const max_open_limit, uint32_t const max_active_limit);
-
  public:
   explicit ZenFS(ZonedBlockDevice* zbd, std::shared_ptr<FileSystem> aux_fs,
                  std::shared_ptr<Logger> logger);
   virtual ~ZenFS();
 
-  Status Mount(bool readonly);
+  Status Mount(bool readonly, bool formating = false);
   Status MkFS(std::string aux_fs_path, uint32_t finish_threshold,
               uint32_t max_open_limit, uint32_t max_active_limit);
   std::map<std::string, Env::WriteLifeTimeHint> GetWriteLifeTimeHints();

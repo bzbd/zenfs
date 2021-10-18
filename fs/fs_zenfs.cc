@@ -302,6 +302,7 @@ IOStatus ZenFS::RollSnapshotZone(std::string* snapshot) {
   std::string super_string;
   super_block_->EncodeTo(&super_string);
   s = snapshot_log_->AddRecord(super_string);
+
   if (!s.ok()) {
     Error(logger_, "Init new snapshot zone error.");
     return IOStatus::Corruption("Out of snapshot log zones");
@@ -386,26 +387,15 @@ IOStatus ZenFS::RollMetaZoneLocked(bool async) {
       assert(false);
     }
 
-    // close write for old op log zones
+    // finish write and reset old op log zone
     auto old_op_zone = old_op_log->GetZone();
-    s = old_op_zone->Close();
-    if (!s.ok()) {
-      Error(logger_, "Failed to close old op zone. Error: %s",
-            s.ToString().c_str());
+    if (old_op_zone->GetCapacityLeft()) WriteEndRecord(old_op_log.get());
+    if (!old_op_zone->Close().ok())
       assert(false);
-    }
-    s = old_op_zone->Finish();
-    if (!s.ok()) {
-      Error(logger_, "Failed to finish old op zone. Error: %s",
-            s.ToString().c_str());
+    if (!old_op_zone->Finish().ok())
       assert(false);
-    }
-    s = old_op_zone->Reset();
-    if (!s.ok()) {
-      Error(logger_, "Failed to reset old op zone. Error: %s",
-            s.ToString().c_str());
+    if (!old_op_zone->Reset().ok())
       assert(false);
-    }
   };
 
 
@@ -822,7 +812,7 @@ Status ZenFS::DecodeSnapshotFrom(Slice* input) {
 /* This function only read through slices in a snapshot record and
  * DO NOT add valid slices to files_ to avoid duplicating files
  * appeared in different snapshots*/
-Status ZenFS::DecodeSnapshotFromAndNoCacheFiles(Slice* input) {
+Status ZenFS::TestSnapshotCorrectness(Slice* input) {
   Slice slice;
 
   assert(files_.size() == 0);
@@ -880,6 +870,9 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
   Status s;
   bool done = false;
 
+  if (!log->ReadRecord(&record, &scratch).ok()) 
+    return Status::Corruption("ZenFS", "Corrupt super recode.");
+
   while (!done) {
     IOStatus rs = log->ReadRecord(&record, &scratch);
     if (!rs.ok()) {
@@ -898,7 +891,7 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 
     switch (tag) {
       case kCompleteFilesSnapshot:
-        s = DecodeSnapshotFromAndNoCacheFiles(&data);
+        s = TestSnapshotCorrectness(&data);
         if (!s.ok()) {
           Warn(logger_, "Could not decode complete snapshot: %s",
                s.ToString().c_str());
@@ -942,11 +935,11 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 
 /* Mount the filesystem by recovering form the latest valid snapshot zone
  * and metadata zone*/
-Status ZenFS::Mount(bool readonly) {
+Status ZenFS::Mount(bool readonly, bool formating) {
   std::string scratch;
   Slice super_record;
-  std::shared_ptr<ZenMetaLog> log;
-  std::shared_ptr<Superblock> super_block;
+  std::unique_ptr<ZenMetaLog> log;
+  std::unique_ptr<Superblock> super_block;
   uint32_t max_snapshot_seq = 0, max_op_seq = 0;
   Status s;
 
@@ -968,8 +961,8 @@ Status ZenFS::Mount(bool readonly) {
     if (s.ok()) s = super_block->CompatibleWith(zbd_);
     if (s.ok() && super_block->GetSeq() > max_snapshot_seq) {
       max_snapshot_seq = super_block->GetSeq();
-      snapshot_log_.reset(log.get());
-      super_block_.reset(super_block.get());
+      snapshot_log_.reset(log.release());
+      super_block_.reset(super_block.release());
     }
   }
   
@@ -997,8 +990,8 @@ Status ZenFS::Mount(bool readonly) {
     if (s.ok()) s = super_block->CompatibleWith(zbd_);
     if (s.ok() && super_block->GetSeq() > max_op_seq) {
       max_op_seq = super_block->GetSeq();
-      op_log_.reset(log.get());
-      if (max_op_seq > max_snapshot_seq) super_block_.reset(super_block.get());
+      op_log_.reset(log.release());
+      if (max_op_seq > max_snapshot_seq) super_block_.reset(super_block.release());
     }
   }
 
@@ -1008,41 +1001,49 @@ Status ZenFS::Mount(bool readonly) {
     return Status::Corruption("Mount", "Error: No valid opreation log.");
   }
 
-  // Recover snapshot fisrt, then opreation log.
-  s = RecoverFrom(snapshot_log_.get());
-  if (!s.ok()) {
-    Error(logger_, "!!!Error : Recover snapshot failed!!!");
-    return Status::Corruption("Mount", "Error: Recover snapshot failed.");
-  }
-  s = RecoverFrom(op_log_.get());
-  if (!s.ok()) {
-    Error(logger_, "!!!Error : Recover opreation log failed!!!");
-    return Status::Corruption("Mount", "Error: Recover opreation log failed.");
-  }
+  assert(op_log_.get() != nullptr);
+  assert(snapshot_log_.get() != nullptr);
+  assert(super_block_.get() != nullptr);
 
   zbd_->SetFinishTreshold(super_block_->GetFinishTreshold());
   zbd_->SetMaxActiveZones(super_block_->GetMaxActiveZoneLimit());
   zbd_->SetMaxOpenZones(super_block_->GetMaxOpenZoneLimit());
 
-  IOOptions foo;
-  IODebugContext bar;
-  s = target()->CreateDirIfMissing(super_block_->GetAuxFsPath(),
-                                     foo, &bar);
-  if (!s.ok()) {
-    Error(logger_, "Failed to create aux filesystem directory.");
-    return s;
-  }
+  // Recovery could be skipped if one's intend was formating the disk.
+  if (!formating) {
+    // Normal path, just mount, not format.
+    // Recover snapshot fisrt, then opreation log.
+    s = RecoverFrom(snapshot_log_.get());
+    if (!s.ok() && !readonly) {
+      Error(logger_, "!!!Error : Recover snapshot failed!!!\n%s", s.ToString().c_str());
+      return Status::Corruption("Mount", "Error: Recover snapshot failed.\n");
+    }
+    s = RecoverFrom(op_log_.get());
+    if (!s.ok() && !readonly) {
+      Error(logger_, "!!!Error : Recover opreation log failed!!!\n%s", s.ToString().c_str());
+      return Status::Corruption("Mount", "Error: Recover opreation log failed.");
+    }
 
-  if (readonly) {
-    Info(logger_, "Mounting READ ONLY");
-  } else {
-    files_mtx_.lock();
-    // Synchronized call.
-    s = RollMetaZoneLocked(false);
-    files_mtx_.unlock();
+    IOOptions foo;
+    IODebugContext bar;
+    s = target()->CreateDirIfMissing(super_block_->GetAuxFsPath(),
+                                      foo, &bar);
     if (!s.ok()) {
-      Error(logger_, "Failed to roll metadata zone.");
+      Error(logger_, "Failed to create aux filesystem directory.");
       return s;
+    }
+
+    if (readonly) {
+      Info(logger_, "Mounting READ ONLY");
+    } else {
+      files_mtx_.lock();
+      // Synchronized call.
+      s = RollMetaZoneLocked(false);
+      files_mtx_.unlock();
+      if (!s.ok()) {
+        Error(logger_, "Failed to roll metadata zone.");
+        return s;
+      }
     }
   }
 
@@ -1061,42 +1062,13 @@ Status ZenFS::Mount(bool readonly) {
   return Status::OK();
 }
 
-Status ZenFS::ResetZone(std::vector<Zone*> const & zones,
-    Zone* reset_zone, std::unique_ptr<ZenMetaLog>* log,
-    std::string const & aux_fs_path, uint32_t const finish_threshold,
-    uint32_t const max_open_limit, uint32_t const max_active_limit) {
-
-  Status s;
-
-  for (const auto z : zones) {
-    if (z->Reset().ok()) {
-      if (!reset_zone) reset_zone = z;
-    } else {
-      Warn(logger_, "Failed to reset the zone\n");
-    }
-  }
-
-  if (!reset_zone) {
-    return Status::IOError("No available zones\n");
-  }
-
-  log->reset(new ZenMetaLog(zbd_, reset_zone));
-
-  Superblock* super = new Superblock(zbd_, aux_fs_path, finish_threshold,
-                                     max_open_limit, max_active_limit);
-  std::string super_string;
-  super->EncodeTo(&super_string);
-
-  // write an empty superblock to the zone
-  s = (log->get())->AddRecord(super_string);
-  if (!s.ok()) return std::move(s);
-
-  return Status::OK();
-}
-
 Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
                    uint32_t max_open_limit, uint32_t max_active_limit) {
   Status s;
+  Zone* reset_zone;
+  std::string super_string;
+  Superblock* super_block_ = new Superblock(zbd_, aux_fs_path, finish_threshold,
+                                            max_open_limit, max_active_limit);
   /* TODO: check practical limits */
 
   if (max_open_limit > zbd_->GetMaxOpenZones()) {
@@ -1122,32 +1094,65 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
   ClearFiles();
   zbd_->ResetUnusedIOZones();
 
-  Zone* reset_zone = nullptr;
+  // Reset all used snapshot zones and get one for writing a new super block.
+  reset_zone = nullptr;
+  for (const auto& z : zbd_->GetSnapshotZones()) {
+    if (z->Reset().ok()) {
+      if (!reset_zone) reset_zone = z;
+    } else {
+      Warn(logger_, "Failed to reset the zone\n");
+    } 
+  }
 
-  s = ResetZone(zbd_->GetSnapshotZones(), reset_zone, &snapshot_log_, aux_fs_path,
-      finish_threshold, max_open_limit, max_active_limit);
+  if (!reset_zone) {
+    return Status::IOError("No available zones for snapshots\n");
+  }
+
+  // Write super block for snapshot zone
+  snapshot_log_.reset(new ZenMetaLog(zbd_, reset_zone));
+  super_block_->EncodeTo(&super_string);
+  s = snapshot_log_->AddRecord(super_string);
+  if (!s.ok()) {
+    Error(logger_, "Failed to reset snapshot: %s", s.ToString().c_str());
+    return Status::IOError("Failed to reset snapshot");
+  }
+
+  // Write an empty snapshot
+  std::string snapshot;
+  WriteSnapshotLocked(snapshot_log_.get(), &snapshot);
+  snapshot_log_->AddRecord(snapshot);
+  WriteEndRecord(snapshot_log_.get());
 
   if (!s.ok()) {
     Error(logger_, "Failed to reset snapshot: %s", s.ToString().c_str());
     return Status::IOError("Failed to reset snapshot");
   }
 
-  // Write an empty snapshot as start point.
-  std::string snapshot;
-  EncodeSnapshotTo(&snapshot);
-  WriteEndRecord(snapshot_log_.get());
-  snapshot_log_->AddRecord(snapshot);
+  // Reset all used opreation log zones and get one for writing a new super block.
+  reset_zone = nullptr;
 
-  s = ResetZone(zbd_->GetOpZones(), reset_zone, &op_log_, aux_fs_path,
-      finish_threshold, max_open_limit, max_active_limit);
+  for (const auto& z : zbd_->GetOpZones()) {
+    if (z->Reset().ok()) {
+      if (!reset_zone) reset_zone = z;
+    } else {
+      Warn(logger_, "Failed to reset the zone\n");
+    } 
+  }
+
+  if (!reset_zone) {
+    return Status::IOError("No available zones for opreation log.\n");
+  }
+
+  // Write super block for meta zone
+  op_log_.reset(new ZenMetaLog(zbd_, reset_zone));
+  super_block_->EncodeTo(&super_string);
+  s = op_log_->AddRecord(super_string);
+  WriteEndRecord(op_log_.get());
 
   if (!s.ok()) {
     Error(logger_, "Failed to reset op log: %s", s.ToString().c_str());
     return Status::IOError("Failed to reset op log");
   }
-
-  // Write end record as start point.
-  WriteEndRecord(op_log_.get());
 
   Info(logger_, "Empty filesystem created");
   return Status::OK();
