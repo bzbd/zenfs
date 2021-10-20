@@ -268,16 +268,10 @@ void ZenFS::ClearFiles() {
 }
 
 /* Assumes that files_mutex_ is held */
-IOStatus ZenFS::WriteSnapshotLocked(ZenMetaLog* meta_log, std::string* snapshot) {
-  IOStatus s;
+void ZenFS::WriteSnapshotLocked(std::string* snapshot) {
   EncodeSnapshotTo(snapshot);
-  if (s.ok()) {
-    for (auto it = files_.begin(); it != files_.end(); it++) {
-      ZoneFile* zoneFile = it->second;
-      zoneFile->MetadataSynced();
-    }
-  }
-  return s;
+  for (auto& f : files_)
+    f.second->MetadataSynced();
 }
 
 IOStatus ZenFS::RollSnapshotZone(std::string* snapshot) {
@@ -345,7 +339,7 @@ IOStatus ZenFS::RollMetaZoneLocked(bool async) {
 
   // write snapshot in memory
   std::shared_ptr<std::string> snapshot(new std::string);
-  WriteSnapshotLocked(snapshot_log_.get(), snapshot.get());
+  WriteSnapshotLocked(snapshot.get());
   
   // allocate new mete zone
   if ((new_op_zone = zbd_->AllocateMetaZone()) == nullptr) {
@@ -1119,7 +1113,7 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
 
   // Write an empty snapshot
   std::string snapshot;
-  WriteSnapshotLocked(snapshot_log_.get(), &snapshot);
+  WriteSnapshotLocked(&snapshot);
   snapshot_log_->AddRecord(snapshot);
   WriteEndRecord(snapshot_log_.get());
 

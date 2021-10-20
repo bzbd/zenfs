@@ -153,7 +153,7 @@ class ZenFS : public FileSystemWrapper {
 
   void LogFiles();
   void ClearFiles();
-  IOStatus WriteSnapshotLocked(ZenMetaLog* meta_log, std::string* snapshot);
+  void WriteSnapshotLocked(std::string* snapshot);
   IOStatus WriteEndRecord(ZenMetaLog* meta_log);
   IOStatus RollMetaZoneLocked(bool async);
   IOStatus RollSnapshotZone(std::string* snapshot);
