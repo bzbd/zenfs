@@ -499,17 +499,10 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
   zone_sz_ = info.zone_size;
   nr_zones_ = info.nr_zones;
 
-  /* We need one open zone for meta data writes, the rest can be used for files
+  /* We need 3 open zones for meta data writes , the rest can be used for files
    */
-  if (info.max_nr_active_zones == 0)
-    max_nr_active_io_zones_ = info.nr_zones;
-  else
-    max_nr_active_io_zones_ = info.max_nr_active_zones - 1;
-
-  if (info.max_nr_open_zones == 0)
-    max_nr_open_io_zones_ = info.nr_zones;
-  else
-    max_nr_open_io_zones_ = info.max_nr_open_zones - 1;
+  max_nr_active_io_zones_ = 10;
+  max_nr_open_io_zones_ = 11;
 
   Info(logger_, "Zone block device nr zones: %u max active: %u max open: %u \n", info.nr_zones,
        info.max_nr_active_zones, info.max_nr_open_zones);
