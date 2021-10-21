@@ -409,11 +409,10 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size,
 
     if (async) {
       s = active_zone_->Append_async((char*)data + offset, wr_size);
-      if (!s.ok()) return s;
-
     } else {
       s = active_zone_->Append((char*)data + offset, wr_size);
     }
+    if (!s.ok()) return s;
 
     fileSize += wr_size;
     left -= wr_size;
