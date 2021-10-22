@@ -372,6 +372,7 @@ static std::string roll_throughput_metric_name = "zenfs_roll_throughput";
 
 static std::string active_zones_metric_name = "zenfs_active_zones";
 static std::string open_zones_metric_name = "zenfs_open_zones";
+static std::string zbd_free_space_metric_name = "zenfs_free_space";
 
 ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger> logger, std::string bytedance_tags,
                                    std::shared_ptr<MetricsReporterFactory> metrics_reporter_factory)
@@ -424,7 +425,9 @@ ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger>
       active_zones_reporter_(*metrics_reporter_factory_->BuildHistReporter(
           active_zones_metric_name, bytedance_tags_)),
       open_zones_reporter_(*metrics_reporter_factory_->BuildHistReporter(
-          open_zones_metric_name, bytedance_tags_)) {
+          open_zones_metric_name, bytedance_tags_)),
+      zbd_free_space_reporter_(*metrics_reporter_factory_->BuildHistReporter(
+          zbd_free_space_metric_name, bytedance_tags_)) {
   Info(logger_, "New Zoned Block Device: %s (with metrics enabled)",
        filename_.c_str());
 }

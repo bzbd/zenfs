@@ -297,6 +297,7 @@ class ZonedBlockDevice {
   using DataReporter = HistReporterHandle &;
   DataReporter active_zones_reporter_;
   DataReporter open_zones_reporter_;
+  DataReporter zbd_free_space_reporter_;
 
   std::unique_ptr<BackgroundWorker> meta_worker_;
 

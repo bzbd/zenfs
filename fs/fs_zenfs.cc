@@ -309,6 +309,8 @@ IOStatus ZenFS::RollSnapshotZone(std::string* snapshot) {
   s = snapshot_log_->AddRecord(*snapshot);
 
   if (s.ok()) {
+    zbd_->ReportSpaceUtilization();
+    
     auto new_snapshot_log_zone_size =
         snapshot_log_->GetZone()->wp_ - snapshot_log_->GetZone()->start_;
     Info(logger_, "Size of new snapshot log zone %ld\n",
@@ -382,6 +384,9 @@ IOStatus ZenFS::RollMetaZoneLocked(bool async) {
             "Could not write snapshot when rolling to a new snapshpt log zone");
       assert(false);
     }
+
+    Info(logger_, "zbd free space %lu MB RollMetaZoneLocked\n", zbd_->GetFreeSpace() / (1024 * 1024));
+    zbd_->zbd_free_space_reporter_.AddRecord(zbd_->GetFreeSpace() / (1024 * 1024));
 
     // finish write and reset old op log zone
     auto old_op_zone = old_op_log->GetZone();
@@ -1123,6 +1128,9 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
     Error(logger_, "Failed to reset snapshot: %s", s.ToString().c_str());
     return Status::IOError("Failed to reset snapshot");
   }
+
+  Info(logger_, "zbd free space %lu MB MkFS\n", zbd_->GetFreeSpace() / (1024 * 1024));
+  zbd_->zbd_free_space_reporter_.AddRecord(zbd_->GetFreeSpace() / (1024 * 1024));
 
   // Reset all used opreation log zones and get one for writing a new super block.
   reset_zone = nullptr;
