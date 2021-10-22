@@ -466,12 +466,9 @@ ZonedWritableFile::ZonedWritableFile(ZonedBlockDevice* zbd, bool _buffered,
 }
 
 IOStatus ZoneFile::Sync() {
-  IOStatus s;
-  if (active_zone_) {
-    s = active_zone_->Sync();
-    if (!s.ok()) return s;
-  }
-  return s;
+  if (active_zone_)
+    return active_zone_->Sync();
+  return IOStatus::OK();
 }
 
 ZonedWritableFile::~ZonedWritableFile() {
