@@ -216,6 +216,7 @@ class ZonedBlockDevice {
   uint64_t GetFreeSpace();
   uint64_t GetUsedSpace();
   uint64_t GetReclaimableSpace();
+  void ReportSpaceUtilization();
 
   std::string GetFilename();
   uint32_t GetBlockSize();
@@ -298,6 +299,8 @@ class ZonedBlockDevice {
   DataReporter active_zones_reporter_;
   DataReporter open_zones_reporter_;
   DataReporter zbd_free_space_reporter_;
+  DataReporter zbd_used_space_reporter_;
+  DataReporter zbd_reclaimable_space_reporter_;
 
   std::unique_ptr<BackgroundWorker> meta_worker_;
 

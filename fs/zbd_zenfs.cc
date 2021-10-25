@@ -373,6 +373,8 @@ static std::string roll_throughput_metric_name = "zenfs_roll_throughput";
 static std::string active_zones_metric_name = "zenfs_active_zones";
 static std::string open_zones_metric_name = "zenfs_open_zones";
 static std::string zbd_free_space_metric_name = "zenfs_free_space";
+static std::string zbd_used_space_metric_name = "zenfs_used_space";
+static std::string zbd_reclaimable_space_metric_name = "zenfs_reclaimable_space";
 
 ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger> logger, std::string bytedance_tags,
                                    std::shared_ptr<MetricsReporterFactory> metrics_reporter_factory)
@@ -427,7 +429,11 @@ ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger>
       open_zones_reporter_(*metrics_reporter_factory_->BuildHistReporter(
           open_zones_metric_name, bytedance_tags_)),
       zbd_free_space_reporter_(*metrics_reporter_factory_->BuildHistReporter(
-          zbd_free_space_metric_name, bytedance_tags_)) {
+          zbd_free_space_metric_name, bytedance_tags_)),
+      zbd_used_space_reporter_(*metrics_reporter_factory_->BuildHistReporter(
+          zbd_used_space_metric_name, bytedance_tags_)),
+      zbd_reclaimable_space_reporter_(*metrics_reporter_factory_->BuildHistReporter(
+          zbd_reclaimable_space_metric_name, bytedance_tags_)) {
   Info(logger_, "New Zoned Block Device: %s (with metrics enabled)",
        filename_.c_str());
 }
@@ -608,6 +614,17 @@ uint64_t ZonedBlockDevice::GetReclaimableSpace() {
     if (z->IsFull()) reclaimable += (z->max_capacity_ - z->used_capacity_);
   }
   return reclaimable;
+}
+
+void ZonedBlockDevice::ReportSpaceUtilization() {
+  Info(logger_, "zbd free space %lu MB MkFS\n", GetFreeSpace() / (1024 * 1024));
+  zbd_free_space_reporter_.AddRecord(GetFreeSpace() / (1024 * 1024));
+
+  Info(logger_, "zbd used space %lu MB MkFS\n", GetUsedSpace() / (1024 * 1024));
+  zbd_used_space_reporter_.AddRecord(GetUsedSpace() / (1024 * 1024));
+
+  Info(logger_, "zbd reclaimable space %lu MB MkFS\n", GetUsedSpace() / (1024 * 1024));
+  zbd_reclaimable_space_reporter_.AddRecord(GetReclaimableSpace() / (1024 * 1024));
 }
 
 void ZonedBlockDevice::LogZoneStats() {
