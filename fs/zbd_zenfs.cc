@@ -351,7 +351,8 @@ ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger>
 
 static std::string write_latency_metric_name = "zenfs_write_latency";
 static std::string read_latency_metric_name = "zenfs_read_latency";
-static std::string sync_latency_metric_name = "zenfs_sync_latency";
+static std::string fg_sync_latency_metric_name = "fg_zenfs_sync_latency";
+static std::string bg_sync_latency_metric_name = "bg_zenfs_sync_latency";
 static std::string io_alloc_wal_latency_metric_name = "zenfs_io_alloc_wal_latency";
 static std::string io_alloc_non_wal_latency_metric_name = "zenfs_io_alloc_non_wal_latency";
 static std::string io_alloc_wal_actual_latency_metric_name = "zenfs_io_alloc_wal_actual_latency";
@@ -387,8 +388,10 @@ ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger>
           *metrics_reporter_factory_->BuildHistReporter(write_latency_metric_name, bytedance_tags_)),
       read_latency_reporter_(
           *metrics_reporter_factory_->BuildHistReporter(read_latency_metric_name, bytedance_tags_)),
-      sync_latency_reporter_(
-          *metrics_reporter_factory_->BuildHistReporter(sync_latency_metric_name, bytedance_tags_)),
+      fg_sync_latency_reporter_(
+          *metrics_reporter_factory_->BuildHistReporter(fg_sync_latency_metric_name, bytedance_tags_)),
+      bg_sync_latency_reporter_(
+          *metrics_reporter_factory_->BuildHistReporter(bg_sync_latency_metric_name, bytedance_tags_)),
       meta_alloc_latency_reporter_(
           *metrics_reporter_factory_->BuildHistReporter(
               meta_alloc_latency_metric_name, bytedance_tags_)),

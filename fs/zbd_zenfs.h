@@ -273,7 +273,8 @@ class ZonedBlockDevice {
   using LatencyReporter = HistReporterHandle &;
   LatencyReporter write_latency_reporter_;
   LatencyReporter read_latency_reporter_;
-  LatencyReporter sync_latency_reporter_;
+  LatencyReporter fg_sync_latency_reporter_;
+  LatencyReporter bg_sync_latency_reporter_;
   LatencyReporter meta_alloc_latency_reporter_;
   LatencyReporter io_alloc_wal_latency_reporter_;
   LatencyReporter io_alloc_wal_actual_latency_reporter_;
