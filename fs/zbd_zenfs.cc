@@ -375,6 +375,7 @@ static std::string open_zones_metric_name = "zenfs_open_zones";
 static std::string zbd_free_space_metric_name = "zenfs_free_space";
 static std::string zbd_used_space_metric_name = "zenfs_used_space";
 static std::string zbd_reclaimable_space_metric_name = "zenfs_reclaimable_space";
+static std::string zbd_total_extent_length_metric_name = "zenfs_total_extent_length";
 
 ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger> logger, std::string bytedance_tags,
                                    std::shared_ptr<MetricsReporterFactory> metrics_reporter_factory)
@@ -433,8 +434,10 @@ ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger>
       zbd_used_space_reporter_(*metrics_reporter_factory_->BuildHistReporter(
           zbd_used_space_metric_name, bytedance_tags_)),
       zbd_reclaimable_space_reporter_(*metrics_reporter_factory_->BuildHistReporter(
-          zbd_reclaimable_space_metric_name, bytedance_tags_)) {
-  Info(logger_, "New Zoned Block Device: %s (with metrics enabled)",
+          zbd_reclaimable_space_metric_name, bytedance_tags_)),
+      zbd_total_extent_length_reporter_(*metrics_reporter_factory_->BuildHistReporter(
+          zbd_total_extent_length_metric_name, bytedance_tags_)) {
+    Info(logger_, "New Zoned Block Device: %s (with metrics enabled)",
        filename_.c_str());
 }
 

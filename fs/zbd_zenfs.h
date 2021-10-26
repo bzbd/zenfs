@@ -301,6 +301,7 @@ class ZonedBlockDevice {
   DataReporter zbd_free_space_reporter_;
   DataReporter zbd_used_space_reporter_;
   DataReporter zbd_reclaimable_space_reporter_;
+  DataReporter zbd_total_extent_length_reporter_;
 
   std::unique_ptr<BackgroundWorker> meta_worker_;
 

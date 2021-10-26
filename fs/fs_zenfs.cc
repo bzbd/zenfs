@@ -270,8 +270,21 @@ void ZenFS::ClearFiles() {
 /* Assumes that files_mutex_ is held */
 void ZenFS::WriteSnapshotLocked(std::string* snapshot) {
   EncodeSnapshotTo(snapshot);
-  for (auto& f : files_)
-    f.second->MetadataSynced();
+
+  uint64_t total_extent_length = 0;
+
+  for (auto& f : files_) {
+    ZoneFile* file = f.second;
+    file->MetadataSynced();
+
+    // calculate extent length and add it to reporter
+    for (const ZoneExtent* extent : file->GetExtents()) {
+      total_extent_length += extent->length_;
+    }
+  }
+
+  Info(logger_, "total extent length %lu WriteSnapshotLocked\n", total_extent_length);
+  zbd_->zbd_total_extent_length_reporter_.AddRecord(total_extent_length);
 }
 
 IOStatus ZenFS::RollSnapshotZone(std::string* snapshot) {
