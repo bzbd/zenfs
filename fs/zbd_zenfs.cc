@@ -617,14 +617,14 @@ uint64_t ZonedBlockDevice::GetReclaimableSpace() {
 }
 
 void ZonedBlockDevice::ReportSpaceUtilization() {
-  Info(logger_, "zbd free space %lu MB MkFS\n", GetFreeSpace() / (1024 * 1024));
-  zbd_free_space_reporter_.AddRecord(GetFreeSpace() / (1024 * 1024));
+  Info(logger_, "zbd free space %lu GB MkFS\n", GetFreeSpace() / (1024 * 1024 * 1024));
+  zbd_free_space_reporter_.AddRecord(GetFreeSpace() / (1024 * 1024 * 1024));
 
-  Info(logger_, "zbd used space %lu MB MkFS\n", GetUsedSpace() / (1024 * 1024));
-  zbd_used_space_reporter_.AddRecord(GetUsedSpace() / (1024 * 1024));
+  Info(logger_, "zbd used space %lu GB MkFS\n", GetUsedSpace() / (1024 * 1024 * 1024));
+  zbd_used_space_reporter_.AddRecord(GetUsedSpace() / (1024 * 1024 * 1024));
 
-  Info(logger_, "zbd reclaimable space %lu MB MkFS\n", GetUsedSpace() / (1024 * 1024));
-  zbd_reclaimable_space_reporter_.AddRecord(GetReclaimableSpace() / (1024 * 1024));
+  Info(logger_, "zbd reclaimable space %lu GB MkFS\n", GetUsedSpace() / (1024 * 1024 * 1024));
+  zbd_reclaimable_space_reporter_.AddRecord(GetReclaimableSpace() / (1024 * 1024 * 1024));
 }
 
 void ZonedBlockDevice::LogZoneStats() {
@@ -712,7 +712,7 @@ unsigned int GetLifeTimeDiff(Env::WriteLifeTimeHint zone_lifetime, Env::WriteLif
 Zone *ZonedBlockDevice::AllocateMetaZone() {
   LatencyHistGuard guard(&meta_alloc_latency_reporter_);
   meta_alloc_qps_reporter_.AddCount(1);
-  
+
   for (const auto z : op_zones_) {
     if (z->IsEmpty()) {
       return z;
@@ -794,7 +794,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     wal_zone_allocating_--;
   }
   LatencyHistGuard guard_actual(reporter_actual);
-  
+
   auto t1 = std::chrono::system_clock::now();
 
   /* Reset any unused zones and finish used zones under capacity treshold*/
