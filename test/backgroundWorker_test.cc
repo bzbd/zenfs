@@ -102,6 +102,7 @@ int test_background_worker_usage() {
         executor, zone_numbers[i], error_handler
     ));
   }
+  return 0;
 }
 }  // namespace ROCKSDB_NAMESPACE
 
