@@ -54,7 +54,7 @@ struct zenfs_aio_ctx {
  * kMetaLog      | This zone is for meta logging.
  * kMetaSnapshot | This zone is used to store meta snapshots.
  */
-enum ZoneState { kEmpty = 0, kActive, kReadOnly, kMetaLog, kMetaSnapshot };
+enum ZoneState { kEmpty = 0, kActive, kOccupied, kReadOnly, kMetaLog, kMetaSnapshot };
 
 class Zone {
   ZonedBlockDevice *zbd_;
@@ -80,6 +80,7 @@ class Zone {
   IOStatus Append_async(char *data, uint32_t size);
   IOStatus Sync();
   bool IsUsed();
+  bool IsUseless();
   bool IsFull();
   bool IsEmpty();
   uint64_t GetZoneNr();
@@ -154,8 +155,11 @@ class ZonedBlockDevice {
   uint32_t block_sz_;
   uint64_t zone_sz_;
   uint32_t nr_zones_;
-  std::vector<Zone *> io_zones_;
+  std::list<Zone *> io_zones_;
   std::mutex io_zones_mtx_;
+  std::vector<Zone *> active_zones_;
+  std::mutex active_zones_mtx_;
+
   std::mutex wal_zones_mtx_;
   // meta log zones used to keep track of running record of metadata
   std::vector<Zone *> op_zones_;
@@ -168,12 +172,6 @@ class ZonedBlockDevice {
   std::shared_ptr<Logger> logger_;
   uint32_t finish_threshold_ = 0;
 
-  std::shared_ptr<BackgroundWorker> data_worker_;
-  std::list<Zone *> active_zones_list_;
-  std::mutex active_zone_list_mtx_;
-
-  std::atomic<int> fg_request_;
-
   // If a thread is allocating a zone fro WAL files, other
   // thread shouldn't take `io_zones_mtx_` (see AllocateZone())
   std::atomic<uint32_t> wal_zone_allocating_{0};
@@ -185,8 +183,9 @@ class ZonedBlockDevice {
   uint32_t max_nr_active_io_zones_;
   uint32_t max_nr_open_io_zones_;
 
+  template <typename T>
   void EncodeJsonZone(std::ostream &json_stream,
-                      const std::vector<Zone *> zones);
+                      const T zones);
 
  public:
   std::mutex zone_resources_mtx_; /* Protects active/open io zones */
@@ -209,6 +208,16 @@ class ZonedBlockDevice {
 
   Zone *GetIOZone(uint64_t offset);
 
+  // Reset a data zone in background.
+  void BgResetDataZone(Zone* z);
+
+  // Enactive a zone and replace read only one.
+  void ReplaceReadOnlyZone(Zone* z);
+
+  // Helper function for selecting one from active zone vector.
+  bool GetActiveZone(bool is_wal, Zone* z);
+
+  // Allocate data zone fast path
   Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
   Zone *AllocateMetaZone();
   Zone *AllocateSnapshotZone();
@@ -261,9 +270,6 @@ class ZonedBlockDevice {
     }
   }
 
-  void NotifyIOZoneFull();
-  void NotifyIOZoneClosed();
-
   void EncodeJson(std::ostream &json_stream);
 
   std::vector<ZoneStat> GetStat();
@@ -278,8 +284,8 @@ class ZonedBlockDevice {
   LatencyReporter bg_sync_latency_reporter_;
   LatencyReporter meta_alloc_latency_reporter_;
   LatencyReporter io_alloc_wal_latency_reporter_;
-  LatencyReporter io_alloc_wal_actual_latency_reporter_;
   LatencyReporter io_alloc_non_wal_latency_reporter_;
+  LatencyReporter io_alloc_wal_actual_latency_reporter_;
   LatencyReporter io_alloc_non_wal_actual_latency_reporter_;
   LatencyReporter roll_latency_reporter_;
 
@@ -304,6 +310,7 @@ class ZonedBlockDevice {
   DataReporter zbd_total_extent_length_reporter_;
 
   std::unique_ptr<BackgroundWorker> meta_worker_;
+  std::unique_ptr<BackgroundWorker> data_worker_;
 
  private:
   std::string ErrorToString(int err);
