@@ -281,7 +281,11 @@ IOStatus ZenFS::RollSnapshotZone(std::string* snapshot) {
   LatencyHistGuard guard(&zbd_->roll_latency_reporter_);
   zbd_->roll_qps_reporter_.AddCount(1);
 
-  // get new snapshot zone
+  // Close and finish old zone at first place to release active zone resources.
+  old_snapshot_log->GetZone()->Close();
+  old_snapshot_log->GetZone()->Finish();
+
+  // Get new snapshot zone.
   if ((new_snapshot_zone = zbd_->AllocateSnapshotZone()) == nullptr) {
     Error(logger_, "Out of snapshot zones, we should go to read only now.");
     return IOStatus::NoSpace("Out of snapshot log zones");
@@ -289,10 +293,10 @@ IOStatus ZenFS::RollSnapshotZone(std::string* snapshot) {
 
   Info(logger_, "New snapshot zone : %d\n", (int)new_snapshot_zone->GetZoneNr());
   
-  // set new snapshot_log_
+  // Set new snapshot_log_.
   snapshot_log_.reset(new ZenMetaLog(zbd_, new_snapshot_zone));
 
-  // write snapshot to disk
+  // Write snapshot to disk.
   std::string super_string;
   super_block_->EncodeTo(&super_string);
   s = snapshot_log_->AddRecord(super_string);
@@ -305,16 +309,14 @@ IOStatus ZenFS::RollSnapshotZone(std::string* snapshot) {
   s = snapshot_log_->AddRecord(*snapshot);
 
   if (s.ok()) {
-    /* We've rolled successfully, we can reset the old zone now */
-    old_snapshot_log->GetZone()->Close();
-    old_snapshot_log->GetZone()->Finish();
-    old_snapshot_log->GetZone()->Reset();
-
     auto new_snapshot_log_zone_size =
         snapshot_log_->GetZone()->wp_ - snapshot_log_->GetZone()->start_;
     Info(logger_, "Size of new snapshot log zone %ld\n",
          new_snapshot_log_zone_size);
     zbd_->roll_throughput_reporter_.AddCount(new_snapshot_log_zone_size);
+
+    /* We've rolled successfully, we can reset the old zone now */
+    old_snapshot_log->GetZone()->Reset();
   }
 
   return s;
