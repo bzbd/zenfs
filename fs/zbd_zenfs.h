@@ -215,7 +215,7 @@ class ZonedBlockDevice {
   void ReplaceReadOnlyZone(Zone* z);
 
   // Helper function for selecting one from active zone vector.
-  bool GetActiveZone(bool is_wal, Zone* z);
+  bool GetActiveZone(bool is_wal, Zone** z);
 
   // Allocate data zone fast path
   Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
@@ -240,8 +240,8 @@ class ZonedBlockDevice {
 
   uint64_t GetZoneSize() { return zone_sz_; }
   uint32_t GetNrZones() { return nr_zones_; }
-  uint32_t GetMaxActiveZones() { return max_nr_active_io_zones_ + 1; };
-  uint32_t GetMaxOpenZones() { return max_nr_open_io_zones_ + 1; };
+  uint32_t GetMaxActiveZones() { return max_nr_active_io_zones_ + 3; };
+  uint32_t GetMaxOpenZones() { return max_nr_open_io_zones_ + 3; };
 
   std::vector<Zone *> GetOpZones() { return op_zones_; }
   std::vector<Zone *> GetSnapshotZones() { return snapshot_zones_; }
@@ -252,7 +252,7 @@ class ZonedBlockDevice {
     if (max_active == 0) /* No limit */
       return true;
     if (max_active <= GetMaxActiveZones()) {
-      max_nr_active_io_zones_ = max_active - 1;
+      max_nr_active_io_zones_ = max_active - 3;
       return true;
     } else {
       return false;
@@ -263,7 +263,7 @@ class ZonedBlockDevice {
     if (max_open == 0) /* No limit */
       return true;
     if (max_open <= GetMaxOpenZones()) {
-      max_nr_open_io_zones_ = max_open - 1;
+      max_nr_open_io_zones_ = max_open - 3;
       return true;
     } else {
       return false;

@@ -156,6 +156,8 @@ IOStatus Zone::Close() {
   int fd = zbd_->GetWriteFD();
   int ret;
 
+  open_for_write_ = false;
+
   if (!(IsEmpty() || IsFull())) {
     ret = zbd_close_zones(fd, start_, zone_sz);
     if (ret) return IOStatus::IOError("Zone close failed\n");
@@ -582,6 +584,12 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
     return lhs->capacity_ > rhs->capacity_;
   });
 
+  while (active_zones_.size() < max_nr_active_io_zones_) {
+    if (!io_zones_.front()->IsEmpty()) break;
+    active_zones_.push_back(io_zones_.front());
+    active_io_zones_++;
+  }
+
   free(zone_rep);
   start_time_ = time(NULL);
 
@@ -790,25 +798,26 @@ void ZonedBlockDevice::ReplaceReadOnlyZone(Zone* z) {
 
 
 // Helper function for selecting one from active zone vector.
-bool ZonedBlockDevice::GetActiveZone(bool is_wal, Zone* z) {
+bool ZonedBlockDevice::GetActiveZone(bool is_wal, Zone** z) {
   std::unique_lock<std::mutex> lk(active_zones_mtx_);
   
   if (active_zones_.size() < 1) {
     // Return true to terminate outer loop with no resource available.
     // Indicating no space left.
-    z = nullptr;
+    *z = nullptr;
     return true;
   }
 
   // Set start point of available active zones and iterate active zone vector.
   for (int i = is_wal ? 0 : 1; i < active_zones_.size(); i++) {
-    if (!active_zones_[i]->open_for_write_) {
-      // Set target's state.
-      z = active_zones_[i];
-      z->open_for_write_ = true;
-      // Return true for setting selected zone successfully.      
-      return true;
-    }
+    if (active_zones_[i] != nullptr)
+      if (!active_zones_[i]->open_for_write_) {
+        // Set target's state.
+        *z = active_zones_[i];
+        (*z)->open_for_write_ = true;
+        // Return true for setting selected zone successfully.      
+        return true;
+      }
   }
 
   // Keep waiting in the loop.
@@ -828,14 +837,14 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     if (is_wal) {
       // High priority requset : take it and go!
       wal_zone_allocating_++;
-      try_again = GetActiveZone(is_wal, z);
+      try_again = GetActiveZone(is_wal, &z);
       wal_zone_allocating_--;
     } else {
       // Low priority requset : wait until no contention.
       while (wal_zone_allocating_.load() != 0) {
         std::this_thread::yield();
       }
-      try_again = GetActiveZone(is_wal, z);
+      try_again = GetActiveZone(is_wal, &z);
     }
   } while (!try_again);
 
