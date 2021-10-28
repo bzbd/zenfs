@@ -174,6 +174,11 @@ IOStatus Zone::Append(char *data, uint32_t size) {
 
   assert((size % zbd_->GetBlockSize()) == 0);
 
+  /* Make sure we don't have any outstanding writes */
+  s = Sync();
+  if (!s.ok())
+    return s;
+
   while (left) {
     ret = pwrite(fd, ptr, size, wp_);
     if (ret < 0) return IOStatus::IOError("Write failed");
@@ -516,6 +521,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
 
   meta_worker_.reset(new BackgroundWorker());
   data_worker_.reset(new BackgroundWorker());
+  active_zones_.resize(max_nr_active_io_zones_);
   
   ret = zbd_list_zones(read_f_, 0, addr_space_sz, ZBD_RO_ALL, &zone_rep, &reported_zones);
 
@@ -559,7 +565,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
         Zone *newZone = new Zone(this, z);
         io_zones_.push_back(newZone);
         if (zbd_zone_imp_open(z) || zbd_zone_exp_open(z) || zbd_zone_closed(z)) {
-          active_io_zones_++;
+          active_zones_[active_io_zones_++] = newZone;
           if (zbd_zone_imp_open(z) || zbd_zone_exp_open(z)) {
             if (!readonly) {
               newZone->Close();
@@ -570,10 +576,8 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
     }
   }
 
-  while (active_zones_.size() < max_nr_active_io_zones_) {
-    if (!io_zones_.front()->IsEmpty()) break;
-    active_zones_.push_back(io_zones_.front());
-    active_io_zones_++;
+  for (i = active_io_zones_; i < max_nr_active_io_zones_; i++) {
+    active_zones_[i] = nullptr;
   }
 
   free(zone_rep);
@@ -745,6 +749,7 @@ void ZonedBlockDevice::BgResetDataZone(Zone* z, Zone** slot) {
       assert(false);
     }
     active_io_zones_--;
+    z->bg_processing = false;
     active_zones_mtx_.lock();
     *slot = nullptr;
     active_zones_mtx_.unlock();
@@ -775,6 +780,8 @@ void ZonedBlockDevice::TriggerBgFinishAndReset() {
   // Opreational, scan for jobs.
   for (int i = 0; i < active_zones_.size(); ++i) {
     Zone* z = active_zones_[i];
+    // Skip it when the slot is empty.
+    if (!z) continue;
     // Skip it when is occupied or empty or fulled, this will be handle by other threads.
     if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
       continue;
@@ -842,6 +849,7 @@ bool ZonedBlockDevice::GetActiveZone(int start, Env::WriteLifeTimeHint file_life
       }
       if (allocated_zone) {
         // Target zone found, make it active.
+        allocated_zone->open_for_write_ = true;
         allocated_zone->lifetime_ = file_lifetime;
         active_zones_[i] = allocated_zone;
         active_io_zones_++;
@@ -856,7 +864,7 @@ bool ZonedBlockDevice::GetActiveZone(int start, Env::WriteLifeTimeHint file_life
   }
 
   // Keep waiting in the loop.
-  return ret;
+  return success;
 };
 
 Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool is_wal) {
