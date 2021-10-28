@@ -218,10 +218,10 @@ class ZonedBlockDevice {
   void TriggerBgFinishAndReset();
 
   // Helper function for selecting one from active zone vector.
-  bool GetActiveZone(int start, Env::WriteLifeTimeHint file_lifetime, Zone** ret);
+  bool GetActiveZone(int start, Env::WriteLifeTimeHint file_lifetime, Zone* full_zone, Zone** ret);
 
   // Allocate data zone fast path
-  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
+  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal, Zone* full_zone = nullptr);
   Zone *AllocateMetaZone();
   Zone *AllocateSnapshotZone();
 

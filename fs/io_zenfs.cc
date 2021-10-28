@@ -392,8 +392,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size,
     if (active_zone_->capacity_ == 0) {
       PushExtent();
 
-      active_zone_->CloseWR();
-      active_zone_ = zbd_->AllocateZone(lifetime_, is_wal_);
+      active_zone_ = zbd_->AllocateZone(lifetime_, is_wal_, active_zone_);
       if (!active_zone_) {
         Warn(logger_,
              "Zone allocation failure when appending, filename=%s, left=%d\n",

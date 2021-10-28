@@ -90,7 +90,6 @@ void Zone::CloseWR() {
   assert(open_for_write_);
   Sync();
   if (!Close().ok()) assert(false);
-  assert(!open_for_write_);
 }
 
 void Zone::EncodeJson(std::ostream &json_stream) {
@@ -738,10 +737,11 @@ void ZonedBlockDevice::ResetUnusedIOZones() {
       if (!z->Reset().ok()) Warn(logger_, "Failed reseting zone");
     }
   }
+  active_zones_reporter_.AddRecord(active_io_zones_);
 }
 
 void ZonedBlockDevice::BgResetDataZone(Zone* z, Zone** slot) {
-  data_worker_->SubmitJob([&]() {
+  data_worker_->SubmitJob([&, z, slot]() {
     assert(*slot == z);
     auto s = z->Reset();
     if (!s.ok()) {
@@ -753,11 +753,12 @@ void ZonedBlockDevice::BgResetDataZone(Zone* z, Zone** slot) {
     active_zones_mtx_.lock();
     *slot = nullptr;
     active_zones_mtx_.unlock();
+    active_zones_reporter_.AddRecord(active_io_zones_);
   });
 }
 
 void ZonedBlockDevice::BgFinishDataZone(Zone *z, Zone **slot) {
-  data_worker_->SubmitJob([&]() {
+  data_worker_->SubmitJob([&, z, slot]() {
     assert(*slot == z);
     auto s = z->Finish();
     if (!s.ok()) {
@@ -769,6 +770,7 @@ void ZonedBlockDevice::BgFinishDataZone(Zone *z, Zone **slot) {
     active_zones_mtx_.lock();
     *slot = nullptr;
     active_zones_mtx_.unlock();
+    active_zones_reporter_.AddRecord(active_io_zones_);
   });
 }
 
@@ -782,6 +784,8 @@ void ZonedBlockDevice::TriggerBgFinishAndReset() {
     Zone* z = active_zones_[i];
     // Skip it when the slot is empty.
     if (!z) continue;
+    // Skip already enqueued ones.
+    if (z->bg_processing) continue;
     // Skip it when is occupied or empty or fulled, this will be handle by other threads.
     if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
       continue;
@@ -799,9 +803,20 @@ void ZonedBlockDevice::TriggerBgFinishAndReset() {
 }
 
 // Helper function for selecting one from active zone vector.
-bool ZonedBlockDevice::GetActiveZone(int start, Env::WriteLifeTimeHint file_lifetime, Zone** ret) {
+bool ZonedBlockDevice::GetActiveZone(int start, Env::WriteLifeTimeHint file_lifetime, Zone* full_zone, Zone** ret) {
   std::unique_lock<std::mutex> lk(active_zones_mtx_);
   bool success = false;
+
+  // If caller's active zone is full, set bg finish for it.
+  if (full_zone)
+    if (!full_zone->bg_processing)
+      for (int i = 0; i < active_zones_.size(); i++)
+        if (active_zones_[i] == full_zone) {
+          full_zone->open_for_write_ = false;
+          full_zone->bg_processing = true;
+          BgFinishDataZone(full_zone, &active_zones_[i]);
+          break;
+        }
 
   // Trigger bg recycling with lower priority job.
   for (int i = start; i < active_zones_.size() && !success; i++) {
@@ -867,7 +882,9 @@ bool ZonedBlockDevice::GetActiveZone(int start, Env::WriteLifeTimeHint file_life
   return success;
 };
 
-Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool is_wal) {
+Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool is_wal, Zone* full_zone) {
+  LatencyHistGuard guard(is_wal ? &io_alloc_wal_latency_reporter_
+                                : &io_alloc_non_wal_latency_reporter_);
   // Victim zone.
   Zone* z = nullptr;
 
@@ -877,16 +894,18 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     if (is_wal) {
       // High priority requset : take it and go!
       wal_zone_allocating_++;
-      try_again = GetActiveZone(0, file_lifetime, &z);
+      try_again = GetActiveZone(0, file_lifetime, full_zone, &z);
       wal_zone_allocating_--;
     } else {
       // Low priority requset : wait until no contention.
       while (wal_zone_allocating_.load() != 0) {
         std::this_thread::yield();
       }
-      try_again = GetActiveZone(2, file_lifetime, &z);
+      try_again = GetActiveZone(2, file_lifetime, full_zone, &z);
     }
   } while (!try_again);
+
+  active_zones_reporter_.AddRecord(active_io_zones_);
 
   return z;
 }

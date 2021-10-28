@@ -322,8 +322,10 @@ IOStatus ZenFS::RollSnapshotZone(std::string* snapshot) {
   s = snapshot_log_->AddRecord(*snapshot);
 
   if (s.ok()) {
-    zbd_->ReportSpaceUtilization();
-    
+    /* We've rolled successfully, we can reset the old zone now */
+    old_snapshot_log->GetZone()->Finish();
+    old_snapshot_log->GetZone()->Reset();
+
     auto new_snapshot_log_zone_size =
         snapshot_log_->GetZone()->wp_ - snapshot_log_->GetZone()->start_;
     Info(logger_, "Size of new snapshot log zone %ld\n",
