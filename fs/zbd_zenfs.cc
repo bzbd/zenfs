@@ -5,6 +5,7 @@
 //  (found in the LICENSE.Apache file in the root directory).
 
 #include <locale>
+#include "rocksdb/compaction_dispatcher.h"
 #if !defined(ROCKSDB_LITE) && !defined(OS_WIN)
 
 #include "zbd_zenfs.h"
@@ -65,6 +66,7 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
   lifetime_ = Env::WLTH_NOT_SET;
   used_capacity_ = 0;
   capacity_ = 0;
+  bg_processing = false;
   if (!(zbd_zone_full(z) || zbd_zone_offline(z) || zbd_zone_rdonly(z)))
     capacity_ = zbd_zone_capacity(z) - (zbd_zone_wp(z) - zbd_zone_start(z));
 
@@ -79,7 +81,6 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
 }
 
 bool Zone::IsUsed() { return (used_capacity_ > 0) || open_for_write_; }
-bool Zone::IsUseless() { return used_capacity_ == 0 && start_ != wp_ && !open_for_write_; }
 bool Zone::IsFull() { return (capacity_ == 0); }
 bool Zone::IsEmpty() { return (wp_ == start_); }
 uint64_t Zone::GetZoneNr() { return start_ / zbd_->GetZoneSize(); }
@@ -88,12 +89,8 @@ uint64_t Zone::GetCapacityLeft() { return capacity_; }
 void Zone::CloseWR() {
   assert(open_for_write_);
   Sync();
-  if (IsFull()) {
-    if (!Close().ok())
-      assert(false);
-    zbd_->ReplaceReadOnlyZone(this);
-  }
-  open_for_write_ = false;
+  if (!Close().ok()) assert(false);
+  assert(!open_for_write_);
 }
 
 void Zone::EncodeJson(std::ostream &json_stream) {
@@ -176,11 +173,6 @@ IOStatus Zone::Append(char *data, uint32_t size) {
   if (capacity_ < size) return IOStatus::NoSpace("Not enough capacity for append");
 
   assert((size % zbd_->GetBlockSize()) == 0);
-
-  /* Make sure we don't have any outstanding writes */
-  s = Sync();
-  if (!s.ok())
-    return s;
 
   while (left) {
     ret = pwrite(fd, ptr, size, wp_);
@@ -524,7 +516,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
 
   meta_worker_.reset(new BackgroundWorker());
   data_worker_.reset(new BackgroundWorker());
-
+  
   ret = zbd_list_zones(read_f_, 0, addr_space_sz, ZBD_RO_ALL, &zone_rep, &reported_zones);
 
   if (ret || reported_zones != nr_zones_) {
@@ -565,24 +557,18 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
     if (zbd_zone_type(z) == ZBD_ZONE_TYPE_SWR) {
       if (!zbd_zone_offline(z)) {
         Zone *newZone = new Zone(this, z);
+        io_zones_.push_back(newZone);
         if (zbd_zone_imp_open(z) || zbd_zone_exp_open(z) || zbd_zone_closed(z)) {
           active_io_zones_++;
-          active_zones_.push_back(newZone);
           if (zbd_zone_imp_open(z) || zbd_zone_exp_open(z)) {
             if (!readonly) {
               newZone->Close();
             }
           }
-        } else {
-          io_zones_.push_back(newZone);
         }
       }
     }
   }
-
-  io_zones_.sort([](const Zone* lhs, const Zone* rhs) {
-    return lhs->capacity_ > rhs->capacity_;
-  });
 
   while (active_zones_.size() < max_nr_active_io_zones_) {
     if (!io_zones_.front()->IsEmpty()) break;
@@ -750,84 +736,130 @@ void ZonedBlockDevice::ResetUnusedIOZones() {
   }
 }
 
-void ZonedBlockDevice::BgResetDataZone(Zone* z) {
-  data_worker_->SubmitJob([&, z]() {
-    io_zones_mtx_.lock();
-    io_zones_.remove(z);
-    io_zones_mtx_.unlock();
+void ZonedBlockDevice::BgResetDataZone(Zone* z, Zone** slot) {
+  data_worker_->SubmitJob([&]() {
+    assert(*slot == z);
     auto s = z->Reset();
     if (!s.ok()) {
       Error(logger_, "Failed to reset zones, err: %s", s.ToString().c_str());
       assert(false);
     }
-    io_zones_mtx_.lock();
-    io_zones_.push_front(z);
-    io_zones_mtx_.unlock();
+    active_io_zones_--;
+    active_zones_mtx_.lock();
+    *slot = nullptr;
+    active_zones_mtx_.unlock();
   });
 }
 
-void ZonedBlockDevice::ReplaceReadOnlyZone(Zone* z) {
-  // Open for write must remain true avoiding other thread acquires this zone.
-  assert(z->open_for_write_);
-  // Lock io_zones, link current one into tail and find for replacement.
-  io_zones_mtx_.lock();
-  io_zones_.push_back(z);
-  // Lock active zones to proceed replacement.
-  active_zones_mtx_.lock();
-  // Set nullptr for current thread's target.
-  *std::find(active_zones_.begin(), active_zones_.end(), z) = nullptr;
-  active_io_zones_--;
-  // Replace all nullptr in active_zones_ if possible.
-  for (Zone* npr : active_zones_) {
-    if (npr == nullptr) {
-      auto it = std::find_if(io_zones_.begin(), io_zones_.end(),
-                         [&](Zone *it) { return it->IsEmpty(); });
-      if (it != io_zones_.end()) {
-        // Set replacement if found.
-        npr = *it;
-        active_io_zones_++;
-      } else {
-        // Quit loop when no empty zone avaliable, 
-        break;
-      }
+void ZonedBlockDevice::BgFinishDataZone(Zone *z, Zone **slot) {
+  data_worker_->SubmitJob([&]() {
+    assert(*slot == z);
+    auto s = z->Finish();
+    if (!s.ok()) {
+      Error(logger_, "Failed to finish zones, err: %s", s.ToString().c_str());
+      assert(false);
     }
-  }
-  active_zones_mtx_.unlock();
-  io_zones_mtx_.unlock();
+    active_io_zones_--;
+    z->bg_processing = false;
+    active_zones_mtx_.lock();
+    *slot = nullptr;
+    active_zones_mtx_.unlock();
+  });
 }
 
+void ZonedBlockDevice::TriggerBgFinishAndReset() {
+  int e = 0, d = 1;
+  // if compare exchange failed, means there is bg finish and reset job running,
+  // so we could skip this time.
+  if (!bg_io_zone_recycling_.compare_exchange_strong(e, d)) return;
+  // Opreational, scan for jobs.
+  for (int i = 0; i < active_zones_.size(); ++i) {
+    Zone* z = active_zones_[i];
+    // Skip it when is occupied or empty or fulled, this will be handle by other threads.
+    if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
+      continue;
+    if (!z->IsUsed()) {
+      z->bg_processing = true;
+      BgResetDataZone(z, &active_zones_[i]);
+      continue;
+    }
+    if (z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100)) {
+      z->bg_processing = true;
+      BgFinishDataZone(z, &active_zones_[i]);
+    }
+  }
+  bg_io_zone_recycling_.store(0);
+}
 
 // Helper function for selecting one from active zone vector.
-bool ZonedBlockDevice::GetActiveZone(bool is_wal, Zone** z) {
+bool ZonedBlockDevice::GetActiveZone(int start, Env::WriteLifeTimeHint file_lifetime, Zone** ret) {
   std::unique_lock<std::mutex> lk(active_zones_mtx_);
-  
-  if (active_zones_.size() < 1) {
-    // Return true to terminate outer loop with no resource available.
-    // Indicating no space left.
-    *z = nullptr;
-    return true;
-  }
+  bool success = false;
 
-  // Set start point of available active zones and iterate active zone vector.
-  for (int i = is_wal ? 0 : 1; i < active_zones_.size(); i++) {
-    if (active_zones_[i] != nullptr)
-      if (!active_zones_[i]->open_for_write_) {
-        // Set target's state.
-        *z = active_zones_[i];
-        (*z)->open_for_write_ = true;
-        // Return true for setting selected zone successfully.      
-        return true;
+  // Trigger bg recycling with lower priority job.
+  for (int i = start; i < active_zones_.size() && !success; i++) {
+    if (active_zones_[i] != nullptr) {
+      // This slot is referencing a zone.
+      Zone* z = active_zones_[i];
+      // If this zone is under recycling, skip it.
+      if (z->bg_processing) continue;
+      // This zone is avaliable, check if is open for write.
+      if (!z->open_for_write_) {
+        // Not open for write by other, we can reuse it for this time.
+        // Set this zone is occupied.
+        z->open_for_write_ = true;
+        // Set return true for reusing selected zone successfully.
+        *ret = z;
+        success = true;
       }
+    } else {
+      // This slot is empty, try allocate a new zone to it.
+      io_zones_mtx_.lock();
+      Zone* allocated_zone = nullptr;
+      unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
+      // Found best suitable life time hint zone.
+      for (Zone* z : io_zones_) {
+        // Skip zones under recycling.
+        if (!z) continue;
+        if ((!z->open_for_write_) && (z->used_capacity_ > 0) && !z->IsFull()) {
+          unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
+          if (diff <= best_diff) {
+            allocated_zone = z;
+            best_diff = diff;
+          }
+        }
+      }
+      // Use an empty zone when no good match exists.
+      if (best_diff >= LIFETIME_DIFF_NOT_GOOD) {
+        for (Zone* z : io_zones_) {
+        // Skip zones under recycling.
+          if (!z) continue;
+          if ((!z->open_for_write_) && z->IsEmpty()) {
+            z->lifetime_ = file_lifetime;
+            allocated_zone = z;
+          }
+        }
+      }
+      if (allocated_zone) {
+        // Target zone found, make it active.
+        allocated_zone->lifetime_ = file_lifetime;
+        active_zones_[i] = allocated_zone;
+        active_io_zones_++;
+        // Set return true for reusing selected zone successfully.
+        *ret = allocated_zone;
+        success = true;
+      }
+      // Trigger bg recycling with low priority jobs.
+      if (start != 0) TriggerBgFinishAndReset();
+      io_zones_mtx_.unlock();
+    }
   }
 
   // Keep waiting in the loop.
-  return false;
+  return ret;
 };
 
 Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool is_wal) {
-  // Ignore lifetime hint for now.
-  (void)file_lifetime;
-
   // Victim zone.
   Zone* z = nullptr;
 
@@ -837,14 +869,14 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     if (is_wal) {
       // High priority requset : take it and go!
       wal_zone_allocating_++;
-      try_again = GetActiveZone(is_wal, &z);
+      try_again = GetActiveZone(0, file_lifetime, &z);
       wal_zone_allocating_--;
     } else {
       // Low priority requset : wait until no contention.
       while (wal_zone_allocating_.load() != 0) {
         std::this_thread::yield();
       }
-      try_again = GetActiveZone(is_wal, &z);
+      try_again = GetActiveZone(2, file_lifetime, &z);
     }
   } while (!try_again);
 

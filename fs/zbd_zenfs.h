@@ -67,10 +67,10 @@ class Zone {
   uint64_t max_capacity_;
   uint64_t wp_;
   bool open_for_write_;
+  bool bg_processing;
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<long> used_capacity_;
   struct zenfs_aio_ctx wr_ctx;
-  ZoneState state_;
 
   IOStatus Reset();
   IOStatus Finish();
@@ -80,7 +80,6 @@ class Zone {
   IOStatus Append_async(char *data, uint32_t size);
   IOStatus Sync();
   bool IsUsed();
-  bool IsUseless();
   bool IsFull();
   bool IsEmpty();
   uint64_t GetZoneNr();
@@ -155,10 +154,11 @@ class ZonedBlockDevice {
   uint32_t block_sz_;
   uint64_t zone_sz_;
   uint32_t nr_zones_;
-  std::list<Zone *> io_zones_;
+  std::vector<Zone *> io_zones_;
   std::mutex io_zones_mtx_;
   std::vector<Zone *> active_zones_;
   std::mutex active_zones_mtx_;
+  std::atomic<int> bg_io_zone_recycling_{0};
 
   std::mutex wal_zones_mtx_;
   // meta log zones used to keep track of running record of metadata
@@ -209,13 +209,16 @@ class ZonedBlockDevice {
   Zone *GetIOZone(uint64_t offset);
 
   // Reset a data zone in background.
-  void BgResetDataZone(Zone* z);
+  void BgResetDataZone(Zone* z, Zone** slot);
+
+  // Finish a data zone in background.
+  void BgFinishDataZone(Zone* z, Zone** slot);
 
   // Enactive a zone and replace read only one.
-  void ReplaceReadOnlyZone(Zone* z);
+  void TriggerBgFinishAndReset();
 
   // Helper function for selecting one from active zone vector.
-  bool GetActiveZone(bool is_wal, Zone** z);
+  bool GetActiveZone(int start, Env::WriteLifeTimeHint file_lifetime, Zone** ret);
 
   // Allocate data zone fast path
   Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
