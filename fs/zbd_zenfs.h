@@ -80,6 +80,7 @@ class Zone {
   IOStatus Append_async(char *data, uint32_t size);
   IOStatus Sync();
   bool IsUsed();
+  bool IsTrash();
   bool IsFull();
   bool IsEmpty();
   uint64_t GetZoneNr();
@@ -209,7 +210,7 @@ class ZonedBlockDevice {
   Zone *GetIOZone(uint64_t offset);
 
   // Reset a data zone in background.
-  void BgResetDataZone(Zone* z, Zone** slot);
+  void BgResetDataZone(Zone* z);
 
   // Finish a data zone in background.
   void BgFinishDataZone(Zone* z, Zone** slot);
