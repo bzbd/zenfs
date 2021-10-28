@@ -213,13 +213,7 @@ class ZonedBlockDevice {
   void BgResetDataZone(Zone* z);
 
   // Finish a data zone in background.
-  void BgFinishDataZone(Zone* z, Zone** slot);
-
-  // Enactive a zone and replace read only one.
-  void TriggerBgFinishAndReset();
-
-  // Helper function for selecting one from active zone vector.
-  bool GetActiveZone(int start, Env::WriteLifeTimeHint file_lifetime, Zone* full_zone, Zone** ret);
+  void BgFinishDataZone(Zone* z);
 
   // Allocate data zone fast path
   Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal, Zone* full_zone = nullptr);

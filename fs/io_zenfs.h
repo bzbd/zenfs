@@ -71,7 +71,7 @@ class ZoneFile {
   bool IsOpenForWR();
 
   IOStatus Append(void* data, int data_size, int valid_size,
-                  bool async = false);
+                  bool async = true);
   IOStatus SetWriteLifeTimeHint(Env::WriteLifeTimeHint lifetime);
   IOStatus Sync();
 

@@ -323,8 +323,10 @@ IOStatus ZenFS::RollSnapshotZone(std::string* snapshot) {
 
   if (s.ok()) {
     /* We've rolled successfully, we can reset the old zone now */
-    old_snapshot_log->GetZone()->Finish();
-    old_snapshot_log->GetZone()->Reset();
+    if (!old_snapshot_log->GetZone()->Reset().ok()) {
+      Error(logger_, "Reset old snapshot log zone failed.");
+      assert(false);
+    }
 
     auto new_snapshot_log_zone_size =
         snapshot_log_->GetZone()->wp_ - snapshot_log_->GetZone()->start_;
@@ -362,8 +364,8 @@ IOStatus ZenFS::RollMetaZoneLocked(bool async) {
   
   // allocate new mete zone
   if ((new_op_zone = zbd_->AllocateMetaZone()) == nullptr) {
-    assert(false);
     Error(logger_, "Out of op log zones, we should go to read only now.");
+    assert(false);
     return IOStatus::NoSpace("Out of op log zones");
   }
 
@@ -379,6 +381,7 @@ IOStatus ZenFS::RollMetaZoneLocked(bool async) {
   if (!s.ok()) {
     Error(logger_,
           "Could not write super block when rolling to a new op log zone");
+    assert(false);
     return IOStatus::IOError("Failed writing a new superblock when rolling to a "
                              "new op log zone");
   }
@@ -404,13 +407,10 @@ IOStatus ZenFS::RollMetaZoneLocked(bool async) {
 
     // finish write and reset old op log zone
     auto old_op_zone = old_op_log->GetZone();
-    if (old_op_zone->GetCapacityLeft()) WriteEndRecord(old_op_log.get());
-    if (!old_op_zone->Close().ok())
+    if (!old_op_zone->Reset().ok()) {
+      Error(logger_, "Finish old opreation log zone failed");
       assert(false);
-    if (!old_op_zone->Finish().ok())
-      assert(false);
-    if (!old_op_zone->Reset().ok())
-      assert(false);
+    }  
   };
 
 
