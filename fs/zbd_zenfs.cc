@@ -4,6 +4,7 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
+#include <atomic>
 #include <locale>
 #include <thread>
 #include "rocksdb/compaction_dispatcher.h"
@@ -67,7 +68,7 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
   lifetime_ = Env::WLTH_NOT_SET;
   used_capacity_ = 0;
   capacity_ = 0;
-  bg_processing = false;
+  occupied_ = false;
   if (!(zbd_zone_full(z) || zbd_zone_offline(z) || zbd_zone_rdonly(z)))
     capacity_ = zbd_zone_capacity(z) - (zbd_zone_wp(z) - zbd_zone_start(z));
 
@@ -749,10 +750,11 @@ void ZonedBlockDevice::BgResetDataZone(Zone* z) {
       Error(logger_, "Failed to reset zones, err: %s", s.ToString().c_str());
       assert(false);
     }
-    z->bg_processing = false;
     if (active) active_io_zones_--;
     Info(logger_, "Active io zones : %ld, Caller BgResetDataZone().\n", active_io_zones_.load());
     active_zones_reporter_.AddRecord(active_io_zones_);
+    assert(!z->open_for_write_);
+    z->occupied_.store(false);
   });
 }
 
@@ -764,9 +766,10 @@ void ZonedBlockDevice::BgFinishDataZone(Zone *z) {
       assert(false);
     }
     active_io_zones_--;
-    z->bg_processing = false;
     Info(logger_, "Active io zones : %ld, Caller BgFinishDataZone().\n", active_io_zones_.load());
     active_zones_reporter_.AddRecord(active_io_zones_);
+    assert(!z->open_for_write_);
+    z->occupied_.store(false);
   });
 }
 
@@ -775,8 +778,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
                                 : &io_alloc_non_wal_latency_reporter_);
   // Allocated zone.
   Zone* allocated_zone = nullptr;
-
-  // Keep trying until got one or no avaliable resource.
+  Zone* victim_zone = nullptr;
 
   int start = is_wal ? 0 : 2;
 
@@ -787,56 +789,87 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
       std::this_thread::yield();
       continue;
     }
-    if (start + open_io_zones_.load() >= max_nr_open_io_zones_) {
+
+    if (start + active_io_zones_.load() >= max_nr_active_io_zones_) {
       continue;
     }
 
-    std::unique_lock<std::mutex> io_lk(io_zones_mtx_);
+    // Scan and submit background jobs
+    if (!is_wal) {
+      for (Zone *z : io_zones_) {
+        bool expect = false;
+        // Skip zones occupied by other threads.
+        if (!z->occupied_.compare_exchange_weak(expect, true)) continue;
+        // Finish full zone if possible.
+        if (!z->open_for_write_ &&
+            (z->IsFull() ||
+             z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
+          // Switch state and send bg finish job.
+          BgFinishDataZone(z);
+          continue;
+        }
+        // Reset Trash ones
+        if (!z->IsUsed() && !z->IsEmpty()) {
+          // Switch state and send bg reset job.
+          BgResetDataZone(z);
+          continue;
+        }
+        z->occupied_.store(false);
+      }
+    }
+
     unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
-    // Found best suitable life time hint zone.
+
     for (Zone *z : io_zones_) {
-      // Finish full zone if possible
-      if (!z->open_for_write_ &&
-          (z->IsFull() ||
-           z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
-        z->bg_processing = true;
-        BgFinishDataZone(z);
-        continue;
-      }
-      // Reset Trash ones
-      if (!is_wal && !z->IsUsed() && !z->IsEmpty()) {
-        z->bg_processing = true;
-        BgResetDataZone(z);
-        continue;
-      }
-      if (z->bg_processing || z->open_for_write_) continue;
+      bool expect = false;
+      if (!z->occupied_.compare_exchange_weak(expect, true)) continue;
       if ((!z->open_for_write_) && (z->used_capacity_ > 0) && !z->IsFull()) {
         unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
         if (diff <= best_diff) {
+          if (allocated_zone) allocated_zone->occupied_.store(false);
           allocated_zone = z;
           best_diff = diff;
         }
+      } else {
+        z->occupied_.store(false);
       }
     }
+
     // Use an empty zone when no good match exists.
     if (best_diff >= LIFETIME_DIFF_NOT_GOOD) {
       for (Zone *z : io_zones_) {
-        if (z->bg_processing || z->open_for_write_ || z->IsFull()) continue;
-        if ((!z->open_for_write_) && z->IsEmpty()) {
+        bool expect = false;
+        if (!z->occupied_.compare_exchange_weak(expect, true)) continue;
+        if (!z->open_for_write_ && z->IsEmpty()) {
           z->lifetime_ = file_lifetime;
-          active_io_zones_++;
+          if (allocated_zone) allocated_zone->occupied_.store(false);
           allocated_zone = z;
+          long cnt = active_io_zones_.load();
+          do {
+            cnt = active_io_zones_.load();
+            if (start + cnt > max_nr_active_io_zones_) break;
+            if (active_io_zones_.compare_exchange_weak(cnt, cnt+1)) retry = false;
+          } while (retry);
+          if (retry) {
+            allocated_zone->occupied_.store(false);
+            allocated_zone = nullptr;
+          } else {
+            break;
+          }
+        } else {
+          z->occupied_.store(false);
         }
       }
     }
+
     if (allocated_zone) {
-      // Target zone found, make it active.
+      // Target zone found.
+      open_io_zones_++;
+      retry = false;
       allocated_zone->open_for_write_ = true;
       allocated_zone->lifetime_ = file_lifetime;
-      open_io_zones_++;
-      Info(logger_, "open io zones : %ld, Caller AllocateZone().\n", active_io_zones_.load());
-      // No retry needed for reusing selected zone successfully.
-      retry = false;
+      Info(logger_, "open io zones : %ld, Caller AllocateZone().\n",
+            open_io_zones_.load());
     }
   }
   

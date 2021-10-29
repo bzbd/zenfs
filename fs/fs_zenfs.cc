@@ -357,6 +357,7 @@ IOStatus ZenFS::RollMetaZoneLocked(bool async) {
 
   // reserve write pointer to the old op log to close it later
   std::shared_ptr<ZenMetaLog> old_op_log = std::move(op_log_);
+  old_op_log->GetZone()->Close();
 
   // write snapshot in memory
   std::shared_ptr<std::string> snapshot(new std::string);
@@ -407,10 +408,8 @@ IOStatus ZenFS::RollMetaZoneLocked(bool async) {
 
     // finish write and reset old op log zone
     auto old_op_zone = old_op_log->GetZone();
-    if (!old_op_zone->Reset().ok()) {
-      Error(logger_, "Finish old opreation log zone failed");
-      assert(false);
-    }  
+    old_op_zone->Finish();
+    old_op_zone->Reset();
   };
 
 

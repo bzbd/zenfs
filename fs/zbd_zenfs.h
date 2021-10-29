@@ -67,7 +67,7 @@ class Zone {
   uint64_t max_capacity_;
   uint64_t wp_;
   bool open_for_write_;
-  bool bg_processing;
+  std::atomic<bool> occupied_;
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<long> used_capacity_;
   struct zenfs_aio_ctx wr_ctx;
