@@ -576,6 +576,8 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
     }
   }
 
+  Info(logger_, "Active io zones : %ld, Caller Open().\n", active_io_zones_.load());
+
   free(zone_rep);
   start_time_ = time(NULL);
 
@@ -734,6 +736,7 @@ void ZonedBlockDevice::ResetUnusedIOZones() {
       if (!z->Reset().ok()) Warn(logger_, "Failed reseting zone");
     }
   }
+  Info(logger_, "Active io zones : %ld, Caller ResetUnusedIOZones().\n", active_io_zones_.load());
   active_zones_reporter_.AddRecord(active_io_zones_);
 }
 
@@ -747,6 +750,7 @@ void ZonedBlockDevice::BgResetDataZone(Zone* z) {
     }
     z->bg_processing = false;
     if (active) active_io_zones_--;
+    Info(logger_, "Active io zones : %ld, Caller BgResetDataZone().\n", active_io_zones_.load());
     active_zones_reporter_.AddRecord(active_io_zones_);
   });
 }
@@ -760,6 +764,7 @@ void ZonedBlockDevice::BgFinishDataZone(Zone *z) {
     }
     active_io_zones_--;
     z->bg_processing = false;
+    Info(logger_, "Active io zones : %ld, Caller BgFinishDataZone().\n", active_io_zones_.load());
     active_zones_reporter_.AddRecord(active_io_zones_);
   });
 }
@@ -829,10 +834,12 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
       allocated_zone->open_for_write_ = true;
       allocated_zone->lifetime_ = file_lifetime;
       active_io_zones_++;
+      Info(logger_, "Active io zones : %ld, Caller AllocateZone().\n", active_io_zones_.load());
       // No retry needed for reusing selected zone successfully.
       retry = false;
     }
   }
+  
   
   if (is_wal && allocated_zone) wal_zone_allocating_--;
 
