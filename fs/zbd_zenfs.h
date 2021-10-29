@@ -179,7 +179,7 @@ class ZonedBlockDevice {
 
   std::atomic<long> active_io_zones_;
   std::atomic<long> open_io_zones_;
-  std::condition_variable zone_resources_;
+  // std::condition_variable zone_resources_;
 
   uint32_t max_nr_active_io_zones_;
   uint32_t max_nr_open_io_zones_;
@@ -189,7 +189,7 @@ class ZonedBlockDevice {
                       const T zones);
 
  public:
-  std::mutex zone_resources_mtx_; /* Protects active/open io zones */
+  // std::mutex zone_resources_mtx_; /* Protects active/open io zones */
 
   std::mutex metazone_reset_mtx_;
   std::condition_variable metazone_reset_cv_;
@@ -219,6 +219,9 @@ class ZonedBlockDevice {
   Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal, Zone* full_zone = nullptr);
   Zone *AllocateMetaZone();
   Zone *AllocateSnapshotZone();
+
+  void NotifyIOZoneFull();
+  void NotifyIOZoneClosed();
 
   uint64_t GetFreeSpace();
   uint64_t GetUsedSpace();

@@ -91,7 +91,8 @@ uint64_t Zone::GetCapacityLeft() { return capacity_; }
 void Zone::CloseWR() {
   assert(open_for_write_);
   Sync();
-  if (!Close().ok()) assert(false);
+  if (Close().ok()) zbd_->NotifyIOZoneClosed();
+  if (capacity_ == 0) zbd_->NotifyIOZoneFull();
 }
 
 void Zone::EncodeJson(std::ostream &json_stream) {
@@ -728,7 +729,7 @@ Zone *ZonedBlockDevice::AllocateSnapshotZone() {
 }
 
 void ZonedBlockDevice::ResetUnusedIOZones() {
-  const std::lock_guard<std::mutex> lock(zone_resources_mtx_);
+  // const std::lock_guard<std::mutex> lock(zone_resources_mtx_);
   /* Reset any unused zones */
   for (const auto z : io_zones_) {
     if (!z->IsUsed() && !z->IsEmpty()) {
@@ -782,11 +783,11 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   if (is_wal) wal_zone_allocating_++;
 
   for (bool retry = true; retry;) {
-    if (start + active_io_zones_.load() >= max_nr_active_io_zones_) {
-      continue;
-    }
     if (start != 0 && wal_zone_allocating_.load() > 0) {
       std::this_thread::yield();
+      continue;
+    }
+    if (start + open_io_zones_.load() >= max_nr_open_io_zones_) {
       continue;
     }
 
@@ -794,21 +795,21 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
     // Found best suitable life time hint zone.
     for (Zone *z : io_zones_) {
-      // Skip zones under recycling.
-      if (!z) continue;
-      if (z->bg_processing || z->open_for_write_) continue;
-      if (!is_wal) {
-        if (z->IsFull() || z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100)) {
-          z->bg_processing = true;
-          BgFinishDataZone(z);
-          continue;
-        }
-        if (!z->IsUsed()) {
-          z->bg_processing = true;
-          BgResetDataZone(z);
-          continue;
-        }
+      // Finish full zone if possible
+      if (!z->open_for_write_ &&
+          (z->IsFull() ||
+           z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
+        z->bg_processing = true;
+        BgFinishDataZone(z);
+        continue;
       }
+      // Reset Trash ones
+      if (!is_wal && !z->IsUsed() && !z->IsEmpty()) {
+        z->bg_processing = true;
+        BgResetDataZone(z);
+        continue;
+      }
+      if (z->bg_processing || z->open_for_write_) continue;
       if ((!z->open_for_write_) && (z->used_capacity_ > 0) && !z->IsFull()) {
         unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
         if (diff <= best_diff) {
@@ -820,11 +821,10 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     // Use an empty zone when no good match exists.
     if (best_diff >= LIFETIME_DIFF_NOT_GOOD) {
       for (Zone *z : io_zones_) {
-        // Skip zones under recycling.
-        if (!z) continue;
         if (z->bg_processing || z->open_for_write_ || z->IsFull()) continue;
         if ((!z->open_for_write_) && z->IsEmpty()) {
           z->lifetime_ = file_lifetime;
+          active_io_zones_++;
           allocated_zone = z;
         }
       }
@@ -833,19 +833,28 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
       // Target zone found, make it active.
       allocated_zone->open_for_write_ = true;
       allocated_zone->lifetime_ = file_lifetime;
-      active_io_zones_++;
-      Info(logger_, "Active io zones : %ld, Caller AllocateZone().\n", active_io_zones_.load());
+      open_io_zones_++;
+      Info(logger_, "open io zones : %ld, Caller AllocateZone().\n", active_io_zones_.load());
       // No retry needed for reusing selected zone successfully.
       retry = false;
     }
   }
-  
   
   if (is_wal && allocated_zone) wal_zone_allocating_--;
 
   active_zones_reporter_.AddRecord(active_io_zones_);
 
   return allocated_zone;
+}
+
+void ZonedBlockDevice::NotifyIOZoneFull() {
+  active_io_zones_--;
+  // zone_resources_.notify_one();
+}
+
+void ZonedBlockDevice::NotifyIOZoneClosed() {
+  open_io_zones_--;
+  // zone_resources_.notify_one();
 }
 
 std::string ZonedBlockDevice::GetFilename() { return filename_; }
