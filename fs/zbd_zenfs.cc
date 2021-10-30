@@ -113,7 +113,7 @@ IOStatus Zone::Reset() {
   struct zbd_zone z;
   int ret;
 
-  assert(!IsUsed());
+  // assert(!IsUsed());
 
   ret = zbd_reset_zones(zbd_->GetWriteFD(), start_, zone_sz);
   if (ret) return IOStatus::IOError("Zone reset failed\n");
@@ -140,7 +140,7 @@ IOStatus Zone::Finish() {
   int fd = zbd_->GetWriteFD();
   int ret;
 
-  assert(!open_for_write_);
+  // assert(!open_for_write_);
 
   ret = zbd_finish_zones(fd, start_, zone_sz);
   if (ret) return IOStatus::IOError("Zone finish failed\n");
@@ -581,6 +581,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
   start_time_ = time(NULL);
 
   meta_worker_.reset(new BackgroundWorker());
+  data_worker_.reset(new BackgroundWorker());
 
   return IOStatus::OK();
 }
@@ -757,8 +758,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   Status s;
 
   // We reserve one more free zone for WAL files in case RocksDB delay close WAL files.
-  int reserved_zones = 1;
-
+  int reserved_zones = 2;
 
   auto *reporter_total = is_wal ? &io_alloc_wal_latency_reporter_
           : &io_alloc_non_wal_latency_reporter_;
@@ -792,7 +792,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   }
 
   // For general files, it needs both io mutex & wal mutex.
-  wal_zones_mtx_.lock();
+  // wal_zones_mtx_.lock();
   if (is_wal) {
     wal_zone_allocating_--;
   }
@@ -804,7 +804,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   for (int i = 0; !is_wal && i < io_zones_.size(); i++) {
     // Unlock wal mutex and give wal thread a chance
     if (!is_wal && wal_zone_allocating_.load() > 0) {
-      wal_zones_mtx_.unlock();
+      // wal_zones_mtx_.unlock();
       while (wal_zone_allocating_.load() > 0) {
         std::this_thread::yield();
         // After we get back, we will re-start the loop in case other thread
@@ -818,7 +818,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
         return open_io_zones_.load() < max_nr_open_io_zones_ - reserved_zones;
       });
 
-      wal_zones_mtx_.lock();
+      // wal_zones_mtx_.lock();
     }
     const auto z = io_zones_[i];
     if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
@@ -827,15 +827,16 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     // Open_for_write = false && valid_data = 0
     // For most cases, reset takes not too much time
     if (!z->IsUsed()) {
-      if (!z->IsFull()) active_io_zones_--;
-      s = z->Reset();
-
-      if (!s.ok()) {
-        Warn(logger_, "Failed resetting zone !");
-      }
+      z->open_for_write_ = true;
+      data_worker_->SubmitJob([&, z](){
+        if (!z->IsFull()) active_io_zones_--;
+        if (!z->Reset().ok()) {
+          Warn(logger_, "Failed resetting zone !");
+        }
+        z->open_for_write_ = false;
+      });
       // For wal file, we only reset once.
       // if (is_wal) break;
-
       continue;
     }
 
@@ -843,11 +844,15 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     if (!is_wal && (z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
       /* If there is less than finish_threshold_% remaining capacity in a
        * non-open-zone, finish the zone */
-      s = z->Finish();
-      if (!s.ok()) {
-        Warn(logger_, "Failed finishing zone");
-      }
-      active_io_zones_--;
+      z->open_for_write_ = true;
+      data_worker_->SubmitJob([&, z](){
+        if (!z->Finish().ok()) {
+          Warn(logger_, "Failed finishing zone");
+        }
+        active_io_zones_--;
+        z->open_for_write_ = false;
+      });
+      continue;
     }
 
     // Find a victim with the smallest capacity.
@@ -914,7 +919,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   }
 
 	LogZoneStats();
-  wal_zones_mtx_.unlock();
+  // wal_zones_mtx_.unlock();
   if (!is_wal) {
     io_zones_mtx_.unlock();
   }
