@@ -753,7 +753,7 @@ void ZonedBlockDevice::ResetUnusedIOZones() {
 Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool is_wal) {
   Zone *allocated_zone = nullptr;
   Zone *finish_victim = nullptr;
-  unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
+  unsigned int best_diff;
   
   Status s;
 
@@ -871,6 +871,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     }
   }
 
+  best_diff = LIFETIME_DIFF_NOT_GOOD;
   /* Try to fill an already open zone(with the best life time diff) */
   for (const auto z : io_zones_) {
     if ((!z->open_for_write_) && (z->used_capacity_ > 0) && !z->IsFull()) {
@@ -884,50 +885,38 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   t2 = std::chrono::system_clock::now();
 
-  // If we did not find a good match, allocate an empty one
-  if (best_diff >= LIFETIME_DIFF_NOT_GOOD) {
-    // TODO(guokuankuan) We should find a better way to sacrifice zone victim.
-    /* If we at the active io zone limit, finish an open zone(if available) with
-     * least capacity left
-    if (active_io_zones_.load() == max_nr_active_io_zones_ &&
-        finish_victim != nullptr) {
-      s = finish_victim->Finish();
-      if (!s.ok()) {
-        Warn(logger_, "Failed finishing zone");
-      }
-      active_io_zones_--;
-      Warn(
-          logger_,
-          "active zone limit reached, and <start: 0x%lx> is forced to finish\n",
-          finish_victim->start_);
-    }
-    */
-
-    if (active_io_zones_.load() < max_nr_active_io_zones_) {
-      for (const auto z : io_zones_) {
-        if ((!z->open_for_write_) && z->IsEmpty()) {
-          z->lifetime_ = file_lifetime;
-          allocated_zone = z;
-          new_zone = 1;
-          break;
-        }
-      }
-    }
+  if (allocated_zone && best_diff < LIFETIME_DIFF_NOT_GOOD) {
+    allocated_zone->open_for_write_ = true;
+    retry = false;
+    open_io_zones_++;
+    break;
   }
 
-  if (allocated_zone) {
-    while (true) {
-      long active = active_io_zones_.load();
-      if (active >= max_nr_active_io_zones_ - (is_wal ? 0 : reserved_zones)) {
-        allocated_zone = nullptr;
-        retry = true;
+  // If we did not find a good match, allocate an empty one
+  long active = active_io_zones_.load();
+  if (active < max_nr_active_io_zones_ - (is_wal ? 0 : reserved_zones)) {
+    for (const auto z : io_zones_) {
+      if ((!z->open_for_write_) && z->IsEmpty()) {
+        z->lifetime_ = file_lifetime;
+        allocated_zone = z;
+        new_zone = 1;
         break;
       }
-      if (active_io_zones_.compare_exchange_weak(active, active+1)) {
-        allocated_zone->open_for_write_ = true;
-        open_io_zones_ += new_zone;
-        retry = false;
-        break;
+    }
+    if (allocated_zone) {
+      while (new_zone != 0) {
+        active = active_io_zones_.load();
+        if (active >= max_nr_active_io_zones_ - (is_wal ? 0 : reserved_zones)) {
+          allocated_zone = nullptr;
+          retry = true;
+          break;
+        }
+        if (active_io_zones_.compare_exchange_weak(active, active + 1)) {
+          allocated_zone->open_for_write_ = true;
+          open_io_zones_++;
+          retry = false;
+          break;
+        }
       }
     }
   }
