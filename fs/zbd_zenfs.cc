@@ -64,6 +64,7 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
   lifetime_ = Env::WLTH_NOT_SET;
   used_capacity_ = 0;
   capacity_ = 0;
+  bg_processing_ = false;
   if (!(zbd_zone_full(z) || zbd_zone_offline(z) || zbd_zone_rdonly(z)))
     capacity_ = zbd_zone_capacity(z) - (zbd_zone_wp(z) - zbd_zone_start(z));
 
@@ -834,40 +835,38 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
     // Open_for_write = false && valid_data = 0
     // For most cases, reset takes not too much time
-    if (!z->IsUsed()) {
-      z->open_for_write_ = true;
-      data_worker_->SubmitJob([&, z](){
-        if (!z->Reset().ok())
-          Warn(logger_, "Failed resetting zone !");
-        if (!z->IsFull()) active_io_zones_--;
-        z->open_for_write_ = false;
-      });
+    bool expect = false;
+    if (z->bg_processing_.compare_exchange_weak(expect, true)) {	
+      if (!z->IsUsed()) {
+        z->open_for_write_ = true;
+        data_worker_->SubmitJob([&, z](){
+          bool active = !z->IsFull();
+	  if (!z->Reset().ok())
+            Warn(logger_, "Failed resetting zone !");
+          if (active) active_io_zones_--;
+          z->open_for_write_ = false;
+	  z->bg_processing_.store(false);	
+        });
       // For wal file, we only reset once.
       // if (is_wal) break;
-      continue;
-    }
-
-    // Finish a almost FULL zone is costless
-    if (!is_wal && (z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
-      /* If there is less than finish_threshold_% remaining capacity in a
-       * non-open-zone, finish the zone */
-      z->open_for_write_ = true;
-      data_worker_->SubmitJob([&, z](){
-        if (!z->Finish().ok())
-          Warn(logger_, "Failed finishing zone");
-        active_io_zones_--;
-        z->open_for_write_ = false;
-      });
-      continue;
-    }
-
-    // Find a victim with the smallest capacity.
-    if (!z->IsFull()) {
-      if (finish_victim == nullptr) {
-        finish_victim = z;
-      } else if (finish_victim->capacity_ > z->capacity_) {
-        finish_victim = z;
+      	continue;
       }
+
+      // Finish a almost FULL zone is costless
+      if (!is_wal && (z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
+        /* If there is less than finish_threshold_% remaining capacity in a
+         * non-open-zone, finish the zone */
+        z->open_for_write_ = true;
+        data_worker_->SubmitJob([&, z](){
+          if (!z->Finish().ok())
+            Warn(logger_, "Failed finishing zone");
+          active_io_zones_--;
+          z->open_for_write_ = false;
+	  z->bg_processing_.store(false);	
+        });
+        continue;
+      }
+      z->bg_processing_.store(false);	
     }
   }
 
