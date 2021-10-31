@@ -939,7 +939,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   std::stringstream ss;
   ss << " is_wal = " << is_wal << " a/o zones " << active_io_zones_.load() << "," << open_io_zones_.load()
      << " lock wait: " << TimeDiff(t0, t1) << ", reset: " << TimeDiff(t1, t2) << ", other: " << TimeDiff(t2, t3)
-     << ", wal_alloc: " << wal_zone_allocating_.load() << "\n";
+     << ", wal_alloc: " << wal_zone_allocating_.load()
+					<< ", wlfh: "<< file_lifetime << "\n";
   Info(logger_, "%s", ss.str().c_str());
 
   return allocated_zone;

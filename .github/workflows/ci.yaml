@@ -11,8 +11,7 @@ name: Lint
 jobs:
   clang-format:
     name: Lint with clang-format
-#     runs-on: ubuntu-latest
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
     - name: Run clang-format style check for C/C++ programs.
