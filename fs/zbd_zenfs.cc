@@ -785,21 +785,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   int new_zone;
 
   do {
-  /* Make sure we are below the zone open limit */
-  {
-    std::unique_lock<std::mutex> lk(zone_resources_mtx_);
-    zone_resources_.wait(lk, [this, is_wal, reserved_zones, file_lifetime] {
-      if (is_wal) {
-        return active_io_zones_.load() < max_nr_active_io_zones_;
-      } else {
-        return active_io_zones_.load() < max_nr_active_io_zones_ - reserved_zones;
-      }
-      return false;
-    });
-  }
-
-  // For general files, it needs both io mutex & wal mutex.
-  // wal_zones_mtx_.lock();
   if (is_wal) {
     wal_zone_allocating_--;
   }
@@ -811,24 +796,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   /* Reset any unused zones and finish used zones under capacity treshold*/
   for (int i = 0; i < io_zones_.size(); i++) {
-    // Unlock wal mutex and give wal thread a chance
-    if (!is_wal && wal_zone_allocating_.load() > 0) {
-      // wal_zones_mtx_.unlock();
-      while (wal_zone_allocating_.load() > 0) {
-        std::this_thread::yield();
-        // After we get back, we will re-start the loop in case other thread
-        // changes the state of any zone, may need fine grained tuning.
-        i = 0;
-      }
-
-      // Re-acquire resource mutex under target condition
-      std::unique_lock<std::mutex> lk(zone_resources_mtx_);
-      zone_resources_.wait(lk, [this, reserved_zones] {
-        return open_io_zones_.load() < max_nr_open_io_zones_ - reserved_zones;
-      });
-
-      // wal_zones_mtx_.lock();
-    }
     const auto z = io_zones_[i];
     if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
       continue;
@@ -871,6 +838,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   best_diff = LIFETIME_DIFF_NOT_GOOD;
   /* Try to fill an already open zone(with the best life time diff) */
   for (const auto z : io_zones_) {
+    if (z->bg_processing_.load()) continue;
     if ((!z->open_for_write_) && (z->used_capacity_ > 0) && !z->IsFull()) {
       unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
       if (diff <= best_diff) {
@@ -897,6 +865,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   long active = active_io_zones_.load();
   if (active < max_nr_active_io_zones_ - (is_wal ? 0 : reserved_zones)) {
     for (const auto z : io_zones_) {
+      if (z->bg_processing_.load()) continue;
       if ((!z->open_for_write_) && z->IsEmpty()) {
         bool expect = false;
         if (z->open_for_write_.compare_exchange_weak(expect, true)) {
