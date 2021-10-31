@@ -759,7 +759,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   Status s;
 
   // We reserve one more free zone for WAL files in case RocksDB delay close WAL files.
-  int reserved_zones = 2;
+  int reserved_zones = 1;
 
   auto *reporter_total = is_wal ? &io_alloc_wal_latency_reporter_
           : &io_alloc_non_wal_latency_reporter_;
@@ -810,7 +810,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   new_zone = 0;
 
   /* Reset any unused zones and finish used zones under capacity treshold*/
-  for (int i = 0; !is_wal && i < io_zones_.size(); i++) {
+  for (int i = 0; i < io_zones_.size(); i++) {
     // Unlock wal mutex and give wal thread a chance
     if (!is_wal && wal_zone_allocating_.load() > 0) {
       // wal_zones_mtx_.unlock();
@@ -836,20 +836,19 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     // Open_for_write = false && valid_data = 0
     // For most cases, reset takes not too much time
     bool expect = false;
-    if (z->bg_processing_.compare_exchange_weak(expect, true)) {	
+    if (z->bg_processing_.compare_exchange_weak(expect, true)) {
       if (!z->IsUsed()) {
         z->open_for_write_ = true;
-        data_worker_->SubmitJob([&, z](){
+        data_worker_->SubmitJob([&, z]() {
           bool active = !z->IsFull();
-	  if (!z->Reset().ok())
-            Warn(logger_, "Failed resetting zone !");
+          if (!z->Reset().ok()) Warn(logger_, "Failed resetting zone !");
           if (active) active_io_zones_--;
           z->open_for_write_ = false;
-	  z->bg_processing_.store(false);	
+          z->bg_processing_.store(false);
         });
-      // For wal file, we only reset once.
-      // if (is_wal) break;
-      	continue;
+        // For wal file, we only reset once.
+        // if (is_wal) break;
+        continue;
       }
 
       // Finish a almost FULL zone is costless
@@ -857,16 +856,15 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
         /* If there is less than finish_threshold_% remaining capacity in a
          * non-open-zone, finish the zone */
         z->open_for_write_ = true;
-        data_worker_->SubmitJob([&, z](){
-          if (!z->Finish().ok())
-            Warn(logger_, "Failed finishing zone");
+        data_worker_->SubmitJob([&, z]() {
+          if (!z->Finish().ok()) Warn(logger_, "Failed finishing zone");
           active_io_zones_--;
           z->open_for_write_ = false;
-	  z->bg_processing_.store(false);	
+          z->bg_processing_.store(false);
         });
         continue;
       }
-      z->bg_processing_.store(false);	
+      z->bg_processing_.store(false);
     }
   }
 
@@ -885,10 +883,14 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   t2 = std::chrono::system_clock::now();
 
   if (allocated_zone && best_diff < LIFETIME_DIFF_NOT_GOOD) {
-    allocated_zone->open_for_write_ = true;
-    retry = false;
-    open_io_zones_++;
-    break;
+    bool expect = false;
+    if (allocated_zone->open_for_write_.compare_exchange_weak(expect, true)) {
+      retry = false;
+      open_io_zones_++;
+      break;
+    } else {
+      allocated_zone = nullptr;
+    }
   }
 
   // If we did not find a good match, allocate an empty one
@@ -896,22 +898,25 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   if (active < max_nr_active_io_zones_ - (is_wal ? 0 : reserved_zones)) {
     for (const auto z : io_zones_) {
       if ((!z->open_for_write_) && z->IsEmpty()) {
-        z->lifetime_ = file_lifetime;
-        allocated_zone = z;
-        new_zone = 1;
-        break;
+        bool expect = false;
+        if (z->open_for_write_.compare_exchange_weak(expect, true)) {
+          z->lifetime_ = file_lifetime;
+          allocated_zone = z;
+          new_zone = 1;
+          break;
+        }
       }
     }
     if (allocated_zone) {
       while (new_zone != 0) {
         active = active_io_zones_.load();
         if (active >= max_nr_active_io_zones_ - (is_wal ? 0 : reserved_zones)) {
+          allocated_zone->open_for_write_.store(false);
           allocated_zone = nullptr;
           retry = true;
           break;
         }
         if (active_io_zones_.compare_exchange_weak(active, active + 1)) {
-          allocated_zone->open_for_write_ = true;
           open_io_zones_++;
           retry = false;
           break;
