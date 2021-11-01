@@ -170,7 +170,6 @@ class ZonedBlockDevice {
   uint32_t finish_threshold_ = 0;
 
   std::shared_ptr<BackgroundWorker> data_worker_;
-  std::list<Zone *> active_zones_list_;
   std::mutex active_zone_list_mtx_;
 
   std::atomic<int> fg_request_;
