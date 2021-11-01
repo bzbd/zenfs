@@ -382,13 +382,13 @@ ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger>
                                    std::shared_ptr<MetricsReporterFactory> metrics_reporter_factory)
     : filename_("/dev/" + bdevname),
       logger_(logger),
-      metrics_reporter_factory_(new CurriedMetricsReporterFactory(metrics_reporter_factory, logger.get(), Env::Default())),
       // A short advice for new developers: BE SURE TO STORE `bytedance_tags_`
       // somewhere,
       // and pass the stored `bytedance_tags_` to the reporters. Otherwise the
       // metrics
       // library will panic with `std::logic_error`.
       bytedance_tags_(bytedance_tags),
+      metrics_reporter_factory_(new CurriedMetricsReporterFactory(metrics_reporter_factory, logger.get(), Env::Default())),
       write_latency_reporter_(
           *metrics_reporter_factory_->BuildHistReporter(write_latency_metric_name, bytedance_tags_)),
       read_latency_reporter_(
@@ -754,10 +754,12 @@ void ZonedBlockDevice::ResetUnusedIOZones() {
 Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool is_wal) {
   Zone *allocated_zone = nullptr;
   Zone *finish_victim = nullptr;
-  int limit = max_nr_active_io_zones_ - (is_wal ? 0 : 1);
-  int new_zone;
   unsigned int best_diff;
+  
   Status s;
+
+  // We reserve one more free zone for WAL files in case RocksDB delay close WAL files.
+  int reserved_zones = 1;
 
   auto *reporter_total = is_wal ? &io_alloc_wal_latency_reporter_
           : &io_alloc_non_wal_latency_reporter_;
@@ -771,41 +773,54 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   
   t0 = std::chrono::system_clock::now();
 
-  if (is_wal) {
-    wal_zone_allocating_++;
-  } else {
+  // For general data, we need both two locks, so the general data thread
+  // can give up lock to WAL thread.
+  if (!is_wal) {
     io_zones_mtx_.lock();
   }
 
-  t1 = std::chrono::system_clock::now();
+  bool retry = true;
+  int new_zone;
 
   LatencyHistGuard guard_actual(reporter_actual);
-  for (bool retry = true; retry;) {
+  t1 = std::chrono::system_clock::now();
+  do {
     new_zone = 0;
+
     /* Reset any unused zones and finish used zones under capacity treshold*/
     for (int i = 0; i < io_zones_.size(); i++) {
       const auto z = io_zones_[i];
-      if (z->bg_processing_ || z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
+      if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
         continue;
 
+      // Open_for_write = false && valid_data = 0
+      // For most cases, reset takes not too much time
       bool expect = false;
       if (z->bg_processing_.compare_exchange_weak(expect, true)) {
         if (!z->IsUsed()) {
+          z->open_for_write_ = true;
           data_worker_->SubmitJob([&, z]() {
             bool active = !z->IsFull();
             if (!z->Reset().ok()) Warn(logger_, "Failed resetting zone !");
             if (active) active_io_zones_--;
+            z->open_for_write_ = false;
             z->bg_processing_.store(false);
           });
+          // For wal file, we only reset once.
+          // if (is_wal) break;
           continue;
         }
 
-        /* If there is less than finish_threshold_% remaining capacity in a
-         * non-open-zone, finish the zone in the background */
-        if (z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100)) {
+        // Finish a almost FULL zone is costless
+        if (!is_wal &&
+            (z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
+          /* If there is less than finish_threshold_% remaining capacity in a
+           * non-open-zone, finish the zone */
+          z->open_for_write_ = true;
           data_worker_->SubmitJob([&, z]() {
             if (!z->Finish().ok()) Warn(logger_, "Failed finishing zone");
             active_io_zones_--;
+            z->open_for_write_ = false;
             z->bg_processing_.store(false);
           });
           continue;
@@ -813,6 +828,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
         z->bg_processing_.store(false);
       }
     }
+
+    t2 = std::chrono::system_clock::now();
 
     best_diff = LIFETIME_DIFF_NOT_GOOD;
     /* Try to fill an already open zone(with the best life time diff) */
@@ -827,8 +844,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
       }
     }
 
-    t2 = std::chrono::system_clock::now();
-
     if (allocated_zone && best_diff < LIFETIME_DIFF_NOT_GOOD) {
       bool expect = false;
       if (allocated_zone->open_for_write_.compare_exchange_weak(expect, true)) {
@@ -842,7 +857,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
     // If we did not find a good match, allocate an empty one
     long active = active_io_zones_.load();
-    if (active < limit) {
+    if (active < max_nr_active_io_zones_ - (is_wal ? 0 : reserved_zones)) {
       for (const auto z : io_zones_) {
         if (z->bg_processing_.load()) continue;
         if ((!z->open_for_write_) && z->IsEmpty()) {
@@ -858,7 +873,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
       if (allocated_zone) {
         while (new_zone != 0) {
           active = active_io_zones_.load();
-          if (active >= limit) {
+          if (active >=
+              max_nr_active_io_zones_ - (is_wal ? 0 : reserved_zones)) {
             allocated_zone->open_for_write_.store(false);
             allocated_zone = nullptr;
             retry = true;
@@ -872,18 +888,18 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
         }
       }
     }
-  }
+  } while (retry);
 
-  
-  if (is_wal) {
-    wal_zone_allocating_--;
-  } else {
+  Debug(logger_,
+        "Allocating zone(new=%d) start: 0x%lx wp: 0x%lx lt: %d file lt: %d\n",
+        new_zone, allocated_zone->start_, allocated_zone->wp_,
+        allocated_zone->lifetime_, file_lifetime);
+
+  LogZoneStats();
+
+  if (!is_wal) {
     io_zones_mtx_.unlock();
   }
-
-  Debug(logger_, "Allocating zone(new=%d) start: 0x%lx wp: 0x%lx lt: %d file lt: %d\n", new_zone,
-          allocated_zone->start_, allocated_zone->wp_, allocated_zone->lifetime_, file_lifetime);
-	LogZoneStats();
 
   t3 = std::chrono::system_clock::now();
 
@@ -891,10 +907,10 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   active_zones_reporter_.AddRecord(active_io_zones_);
 
   std::stringstream ss;
-  ss << " is_wal = " << is_wal << " a/o zones " << active_io_zones_.load() << "," << open_io_zones_.load()
-     << " lock wait: " << TimeDiff(t0, t1) << ", reset: " << TimeDiff(t1, t2) << ", other: " << TimeDiff(t2, t3)
-     << ", wal_alloc: " << wal_zone_allocating_.load()
-					<< ", wlfh: "<< file_lifetime << "\n";
+  ss << " is_wal = " << is_wal << " a/o zones " << active_io_zones_.load()
+     << "," << open_io_zones_.load() << " lock wait: " << TimeDiff(t0, t1)
+     << ", reset: " << TimeDiff(t1, t2) << ", other: " << TimeDiff(t2, t3)
+     << ", wlfh: " << file_lifetime << "\n";
   Info(logger_, "%s", ss.str().c_str());
 
   return allocated_zone;

@@ -46,16 +46,6 @@ struct zenfs_aio_ctx {
   int fd;
 };
 
-/* From prespective of foreground thread, a single zone could be one of these
- * status.
- * kEmpty        | Zone is empty. Could be meta zone or data zone.
- * kActive       | This data zone is open for write.
- * kReadOnly     | This data zone is read only.
- * kMetaLog      | This zone is for meta logging.
- * kMetaSnapshot | This zone is used to store meta snapshots.
- */
-enum ZoneState { kEmpty = 0, kActive, kReadOnly, kMetaLog, kMetaSnapshot };
-
 class Zone {
   ZonedBlockDevice *zbd_;
 
@@ -71,7 +61,6 @@ class Zone {
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<long> used_capacity_;
   struct zenfs_aio_ctx wr_ctx;
-  ZoneState state_;
 
   IOStatus Reset();
   IOStatus Finish();
@@ -169,15 +158,6 @@ class ZonedBlockDevice {
   std::shared_ptr<Logger> logger_;
   uint32_t finish_threshold_ = 0;
 
-  std::shared_ptr<BackgroundWorker> data_worker_;
-  std::mutex active_zone_list_mtx_;
-
-  std::atomic<int> fg_request_;
-
-  // If a thread is allocating a zone fro WAL files, other
-  // thread shouldn't take `io_zones_mtx_` (see AllocateZone())
-  std::atomic<uint32_t> wal_zone_allocating_{0};
-
   std::atomic<long> active_io_zones_;
   std::atomic<long> open_io_zones_;
   std::condition_variable zone_resources_;
@@ -268,8 +248,8 @@ class ZonedBlockDevice {
 
   std::vector<ZoneStat> GetStat();
 
-  std::shared_ptr<CurriedMetricsReporterFactory> metrics_reporter_factory_;
   std::string bytedance_tags_;
+  std::shared_ptr<CurriedMetricsReporterFactory> metrics_reporter_factory_;
 
   using LatencyReporter = HistReporterHandle &;
   LatencyReporter write_latency_reporter_;
@@ -278,8 +258,8 @@ class ZonedBlockDevice {
   LatencyReporter bg_sync_latency_reporter_;
   LatencyReporter meta_alloc_latency_reporter_;
   LatencyReporter io_alloc_wal_latency_reporter_;
-  LatencyReporter io_alloc_wal_actual_latency_reporter_;
   LatencyReporter io_alloc_non_wal_latency_reporter_;
+  LatencyReporter io_alloc_wal_actual_latency_reporter_;
   LatencyReporter io_alloc_non_wal_actual_latency_reporter_;
   LatencyReporter roll_latency_reporter_;
 
@@ -304,6 +284,7 @@ class ZonedBlockDevice {
   DataReporter zbd_total_extent_length_reporter_;
 
   std::unique_ptr<BackgroundWorker> meta_worker_;
+  std::unique_ptr<BackgroundWorker> data_worker_;
 
  private:
   std::string ErrorToString(int err);
