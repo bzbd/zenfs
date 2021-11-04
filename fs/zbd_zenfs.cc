@@ -773,12 +773,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   
   t0 = std::chrono::system_clock::now();
 
-  // For general data, we need both two locks, so the general data thread
-  // can give up lock to WAL thread.
-  if (!is_wal) {
-    io_zones_mtx_.lock();
-  }
-
   bool retry = true;
   int new_zone;
 
@@ -896,10 +890,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
         allocated_zone->lifetime_, file_lifetime);
 
   LogZoneStats();
-
-  if (!is_wal) {
-    io_zones_mtx_.unlock();
-  }
 
   t3 = std::chrono::system_clock::now();
 
