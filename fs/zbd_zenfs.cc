@@ -281,9 +281,9 @@ std::vector<ZoneStat> ZonedBlockDevice::GetStat() {
   std::vector<ZoneStat> stat;
   for (const auto z : io_zones_) {
     ZoneStat zone_stat;
-    zone_stat.total_capacity = z->max_capacity_;
-    zone_stat.write_position = z->wp_;
-    zone_stat.start_position = z->start_;
+    zone_stat.free_capacity = z->capacity_;
+    zone_stat.used_capacity = z->used_capacity_;
+    zone_stat.reclaim_capacity = z->max_capacity_ - z->used_capacity_;
     stat.emplace_back(std::move(zone_stat));
   }
   return stat;
