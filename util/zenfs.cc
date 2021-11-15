@@ -221,8 +221,9 @@ int zenfs_tool_stat() {
   auto stat = zenFS->GetStat();
 
   for (auto &&zone : stat) {
-    std::cout << "Zone total=" << zone.total_capacity << " write_position=" << zone.write_position
-              << " start_position=" << zone.start_position << std::endl;
+    std::cout << "Zone free_capacity=" << zone.free_capacity << " used_capacity=" << zone.used_capacity
+              << " reclaimable_capacity" << zone.reclaim_capacity << " start_position=" << zone.start_position
+              << std::endl;
     for (auto &&file : zone.files) {
       std::cout << "  [" << file.file_id << "] " << file.filename << " " << file.size_in_zone << std::endl;
     }

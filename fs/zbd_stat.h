@@ -22,6 +22,7 @@ class ZoneFileStat {
 
 class ZoneStat {
  public:
+  uint64_t start_position;
   uint64_t free_capacity;
   uint64_t used_capacity;
   uint64_t reclaim_capacity;
