@@ -287,12 +287,11 @@ std::vector<ZoneStat> ZonedBlockDevice::GetStat() {
     zone_stat.reclaim_capacity = z->max_capacity_ - z->used_capacity_;
     stat.emplace_back(std::move(zone_stat));
   }
-  // sort by free capacity ratio
-  std::sort(
-        stat.begin(), stat.end(), [](const ZoneStat& l, const ZoneStat& r) {
-          return l.free_capacity / (l.used_capacity + l.reclaim_capacity) <
-                 r.free_capacity / (r.used_capacity + r.reclaim_capacity);
-        });
+  // sort by trash descending order
+  std::sort(stat.begin(), stat.end(), [](const ZoneStat &l, const ZoneStat &r) {
+    return l.free_capacity < r.free_capacity ||
+           (l.free_capacity == r.free_capacity && l.used_capacity < r.used_capacity);
+  });
   return stat;
 }
 
