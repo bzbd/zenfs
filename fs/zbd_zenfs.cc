@@ -716,7 +716,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   ZenFSMetricsLatencyGuard guard(metrics_, is_wal
                                ? ZENFS_LABEL_DETAILED(IO_ALLOC, WAL, LATENCY)
-                               : ZENFS_LABEL_DETAILED(IO_ALLOC, WAL, LATENCY),
+                               : ZENFS_LABEL_DETAILED(IO_ALLOC, NON_WAL, LATENCY),
                                  Env::Default());
   metrics_->ReportQPS(ZENFS_LABEL(IO_ALLOC, QPS), 1);
 

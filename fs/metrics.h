@@ -148,7 +148,7 @@ enum ZenFSMetricsReporterType : uint32_t {
 #define ZENFS_LABEL(label, type) ZENFS_##label##_##type
 #define ZENFS_LABEL_DETAILED(label, sub_label, type) \
   ZENFS_##sub_label##_##label##_##type
-// eg : ZENFS_LABEL(WRITE, WAL, THROUGHPUT) => ZENFS_WRITE_WAL_THROUGHPUT
+// eg : ZENFS_LABEL(WRITE, WAL, THROUGHPUT) => ZENFS_WAL_WRITE_THROUGHPUT
 
 //----------------OLD VERSION OF BD-Metrics--------------
 
