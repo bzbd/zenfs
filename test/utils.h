@@ -58,8 +58,7 @@ ZonedBlockDevice *zbd_open(bool readonly, std::shared_ptr<Logger> logger) {
 Status zenfs_mount(ZonedBlockDevice *zbd, ZenFS **zenFS, bool readonly, std::shared_ptr<Logger> logger) {
   Status s;
 
-  auto metrics = std::make_shared<BytedanceMetrics>(std::make_shared<ByteDanceMetricsReporterFactory>(), "", logger);
-  *zenFS = new ZenFS(zbd, FileSystem::Default(), logger, metrics);
+  *zenFS = new ZenFS(zbd, FileSystem::Default(), logger);
   s = (*zenFS)->Mount(readonly);
   if (!s.ok()) {
     delete *zenFS;

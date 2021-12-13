@@ -18,6 +18,11 @@ namespace ROCKSDB_NAMESPACE {
 
 #if !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 
+class ZoneSnapshot;
+class ZoneFileSnapshot;
+class ZenFSSnapshot;
+class ZenFSSnapshotOptions;
+
 class Superblock {
   uint32_t magic_ = 0;
   char uuid_[37] = {0};
@@ -133,8 +138,6 @@ class ZenFS : public FileSystemWrapper {
 
   std::shared_ptr<Logger> GetLogger() { return logger_; }
 
-		std::shared_ptr<BDZenFSMetrics> metrics_;
-
   struct MetadataWriter : public ZonedWritableFile::MetadataWriter {
     ZenFS* zenFS;
     IOStatus Persist(ZoneFile* zoneFile) {
@@ -190,7 +193,7 @@ class ZenFS : public FileSystemWrapper {
 
  public:
   explicit ZenFS(ZonedBlockDevice* zbd, std::shared_ptr<FileSystem> aux_fs,
-                 std::shared_ptr<Logger> logger, std::shared_ptr<BytedanceMetrics> metrics);
+                 std::shared_ptr<Logger> logger);
   virtual ~ZenFS();
 
   Status Mount(bool readonly, bool formating = false);
@@ -373,13 +376,15 @@ class ZenFS : public FileSystemWrapper {
   }
 
   std::vector<ZoneStat> GetStat();
+  void GetZenFSSnapshot(ZenFSSnapshot& snapshot,
+                        const ZenFSSnapshotOptions& options);
   ZonedBlockDevice* GetZonedBlockDevice() { return zbd_; }
 };
 #endif  // !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 
 Status NewZenFS(
-    FileSystem** fs, const std::string& bdevname, std::string bytedance_tags_,
-    std::shared_ptr<MetricsReporterFactory> metrics_reporter_factory_);
+    FileSystem** fs, const std::string& bdevname, 
+    std::shared_ptr<ZenFSMetrics> metrics = std::make_shared<NoZenFSMetrics>());
 std::map<std::string, std::string> ListZenFileSystems();
 
 // Branch test (by liuruicheng.222)

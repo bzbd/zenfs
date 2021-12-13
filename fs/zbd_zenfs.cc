@@ -31,7 +31,7 @@
 
 #include "io_zenfs.h"
 #include "rocksdb/env.h"
-#include "utilities/trace/bytedance_metrics_reporter.h"
+#include "snapshot.h"
 
 #define KB (1024)
 #define MB (1024 * KB)
@@ -346,11 +346,8 @@ void BackgroundWorker::SubmitJob(std::unique_ptr<BackgroundJob> &&job) {
   job_cv_.notify_one();
 }
 
-// ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger> logger)
-//    : ZonedBlockDevice(bdevname, logger, "", std::make_shared<ByteDanceMetricsReporterFactory>()) {}
-
-ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger> logger)
-    : filename_("/dev/" + bdevname), logger_(logger) {
+ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger> logger, std::shared_ptr<ZenFSMetrics> metrics)
+    : filename_("/dev/" + bdevname), logger_(logger), metrics_(metrics) {
   Info(logger_, "New Zoned Block Device: %s (with metrics enabled)", filename_.c_str());
 }
 
@@ -549,19 +546,19 @@ uint64_t ZonedBlockDevice::GetReclaimableSpace() {
 void ZonedBlockDevice::ReportSpaceUtilization() {
   auto free_space = GetFreeSpace() >> 30;
   Info(logger_, "zbd free space %lu GB \n", free_space);
-  metrics_->zbd_free_space_reporter_.AddRecord(free_space);
+  metrics_->ReportGeneral(ZENFS_LABEL(FREE_SPACE, SIZE), free_space);
 
   auto used_space = GetUsedSpace() >> 30;
   Info(logger_, "zbd used(valid) space %lu GB\n", used_space);
-  metrics_->zbd_used_space_reporter_.AddRecord(used_space);
+  metrics_->ReportGeneral(ZENFS_LABEL(USED_SPACE, SIZE), used_space);
 
   auto reclaimable_space = GetReclaimableSpace() >> 30;
   Info(logger_, "zbd reclaimable space %lu GB\n", reclaimable_space);
-  metrics_->zbd_reclaimable_space_reporter_.AddRecord(reclaimable_space);
+  metrics_->ReportGeneral(ZENFS_LABEL(RECLAIMABLE_SPACE, SIZE), reclaimable_space);
 
   auto resetable_zones = GetResetableZones();
   Info(logger_, "zbd resetable zones %d\n", resetable_zones);
-  metrics_->zbd_resetable_zones_reporter_.AddRecord(resetable_zones);
+  metrics_->ReportGeneral(ZENFS_LABEL(RESETABLE_ZONES, COUNT), resetable_zones);
 
   // log garbage distribution
   // garbage percent: [0%, <10%, <20% ... <100%, 100%]
@@ -663,8 +660,9 @@ unsigned int GetLifeTimeDiff(Env::WriteLifeTimeHint zone_lifetime, Env::WriteLif
 }
 
 Zone *ZonedBlockDevice::AllocateMetaZone() {
-  LatencyHistGuard guard(&(metrics_->meta_alloc_latency_reporter_));
-  metrics_->meta_alloc_qps_reporter_.AddCount(1);
+  ZenFSMetricsLatencyGuard guard(metrics_, ZENFS_LABEL(META_ALLOC, LATENCY),
+                                 Env::Default());
+  metrics_->ReportQPS(ZENFS_LABEL(META_ALLOC, QPS), 1);
 
   for (const auto z : op_zones_) {
     if (z->IsEmpty()) {
@@ -676,8 +674,9 @@ Zone *ZonedBlockDevice::AllocateMetaZone() {
 }
 
 Zone *ZonedBlockDevice::AllocateSnapshotZone() {
-  LatencyHistGuard guard(&(metrics_->meta_alloc_latency_reporter_));
-  metrics_->meta_alloc_qps_reporter_.AddCount(1);
+  ZenFSMetricsLatencyGuard guard(metrics_, ZENFS_LABEL(META_ALLOC, LATENCY),
+                                 Env::Default());
+  metrics_->ReportQPS(ZENFS_LABEL(META_ALLOC, QPS), 1);
 
   for (const auto z : snapshot_zones_) {
     if (z->IsEmpty()) {
@@ -709,10 +708,11 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   // We reserve one more free zone for WAL files in case RocksDB delay close WAL files.
   int reserved_zones = 1;
 
-  auto *reporter =
-      is_wal ? &metrics_->io_alloc_wal_latency_reporter_ : &metrics_->io_alloc_non_wal_latency_reporter_;
-  LatencyHistGuard guard(reporter);
-  metrics_->io_alloc_qps_reporter_.AddCount(1);
+  ZenFSMetricsLatencyGuard guard(metrics_, is_wal
+                               ? ZENFS_LABEL_DETAILED(IO_ALLOC, WAL, LATENCY)
+                               : ZENFS_LABEL_DETAILED(IO_ALLOC, WAL, LATENCY),
+                                 Env::Default());
+  metrics_->ReportQPS(ZENFS_LABEL(IO_ALLOC, QPS), 1);
 
   auto t0 = std::chrono::system_clock::now();
 
@@ -812,8 +812,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   auto t5 = std::chrono::system_clock::now();
 
-  metrics_->open_zones_reporter_.AddRecord(open_io_zones_);
-  metrics_->active_zones_reporter_.AddRecord(active_io_zones_);
+  metrics_->ReportGeneral(ZENFS_LABEL(OPEN_ZONES, COUNT), open_io_zones_);
+  metrics_->ReportGeneral(ZENFS_LABEL(ACTIVE_ZONES, COUNT), active_io_zones_);
 
   std::stringstream ss;
   ss << " is_wal = " << is_wal << " a/o zones " << active_io_zones_.load() << "," << open_io_zones_.load()
@@ -852,6 +852,11 @@ void ZonedBlockDevice::EncodeJson(std::ostream &json_stream) {
   json_stream << ",\"io\":";
   EncodeJsonZone(json_stream, io_zones_);
   json_stream << "}";
+}
+
+void ZonedBlockDevice::GetZoneSnapshot(std::vector<ZoneSnapshot> &snapshot,
+                                       const ZenFSSnapshotOptions &options) {
+  for (auto &zone : io_zones_) snapshot.emplace_back(*zone, options);
 }
 
 // Callers should make sure the target zone is not been used before submitting this job.
