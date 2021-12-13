@@ -37,6 +37,8 @@
 namespace ROCKSDB_NAMESPACE {
 
 class ZonedBlockDevice;
+class ZoneSnapshot;
+class ZenFSSnapshotOptions;
 
 struct zenfs_aio_ctx {
   struct iocb iocb;
@@ -180,10 +182,12 @@ class ZonedBlockDevice {
   std::mutex metazone_reset_mtx_;
   std::condition_variable metazone_reset_cv_;
 
-  std::shared_ptr<BytedanceMetrics> metrics_;
+  std::shared_ptr<ZenFSMetrics> metrics_;
 
  public:
-  explicit ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger> logger);
+  explicit ZonedBlockDevice(std::string bdevname,
+                            std::shared_ptr<Logger> logger,
+                            std::shared_ptr<ZenFSMetrics> metrics = std::make_shared<NoZenFSMetrics>());
 
   virtual ~ZonedBlockDevice();
 
@@ -253,6 +257,9 @@ class ZonedBlockDevice {
   void EncodeJson(std::ostream &json_stream);
 
   std::vector<ZoneStat> GetStat();
+  std::shared_ptr<ZenFSMetrics> GetMetrics() { return metrics_; }
+  void GetZoneSnapshot(std::vector<ZoneSnapshot> &snapshot,
+                       const ZenFSSnapshotOptions &options);
 
   std::unique_ptr<BackgroundWorker> meta_worker_;
   std::unique_ptr<BackgroundWorker> data_worker_;

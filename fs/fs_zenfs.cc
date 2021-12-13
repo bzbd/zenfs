@@ -24,7 +24,8 @@
 #include "rocksdb/utilities/object_registry.h"
 #include "util/coding.h"
 #include "util/crc32c.h"
-#include "utilities/trace/bytedance_metrics_reporter.h"
+#include "snapshot.h"
+#include "metrics.h"
 
 #define DEFAULT_ZENV_LOG_PATH "/tmp/"
 
@@ -201,8 +202,7 @@ IOStatus ZenMetaLog::ReadRecord(Slice* record, std::string* scratch) {
   return IOStatus::OK();
 }
 
-ZenFS::ZenFS(ZonedBlockDevice* zbd, std::shared_ptr<FileSystem> aux_fs, std::shared_ptr<Logger> logger,
-             std::shared_ptr<BytedanceMetrics> metrics)
+ZenFS::ZenFS(ZonedBlockDevice* zbd, std::shared_ptr<FileSystem> aux_fs, std::shared_ptr<Logger> logger)
     : FileSystemWrapper(aux_fs), zbd_(zbd), logger_(logger) {
   Info(logger_, "ZenFS initializing");
   Info(logger_, "ZenFS parameters: block device: %s, aux filesystem: %s", zbd_->GetFilename().c_str(),
@@ -211,9 +211,6 @@ ZenFS::ZenFS(ZonedBlockDevice* zbd, std::shared_ptr<FileSystem> aux_fs, std::sha
   Info(logger_, "ZenFS initializing");
   next_file_id_ = 1;
   metadata_writer_.zenFS = this;
-
-  metrics_ = metrics;
-  zbd_->metrics_ = metrics;
 }
 
 ZenFS::~ZenFS() {
@@ -271,8 +268,9 @@ IOStatus ZenFS::RollSnapshotZone(std::string* snapshot) {
   IOStatus s;
   ZenMetaLog* old_snapshot_log = snapshot_log_.get();
   Zone* new_snapshot_zone;
-  LatencyHistGuard guard(&metrics_->roll_latency_reporter_);
-  metrics_->roll_qps_reporter_.AddCount(1);
+  ZenFSMetricsLatencyGuard guard(zbd_->GetMetrics(), ZENFS_LABEL(ROLL, LATENCY),
+                                 Env::Default());
+  zbd_->GetMetrics()->ReportQPS(ZENFS_LABEL(ROLL, QPS), 1);
 
   // Close and finish old zone at first place to release active zone resources.
   old_snapshot_log->GetZone()->Close();
@@ -306,7 +304,7 @@ IOStatus ZenFS::RollSnapshotZone(std::string* snapshot) {
 
     auto new_snapshot_log_zone_size = snapshot_log_->GetZone()->wp_ - snapshot_log_->GetZone()->start_;
     Info(logger_, "Size of new snapshot log zone %ld\n", new_snapshot_log_zone_size);
-    metrics_->roll_throughput_reporter_.AddCount(new_snapshot_log_zone_size);
+    zbd_->GetMetrics()->ReportThroughput(ZENFS_LABEL(ROLL, THROUGHPUT), new_snapshot_log_zone_size);
 
     /* We've rolled successfully, we can reset the old zone now */
     old_snapshot_log->GetZone()->Reset();
@@ -326,8 +324,9 @@ IOStatus ZenFS::WriteEndRecord(ZenMetaLog* meta_log) {
 IOStatus ZenFS::RollMetaZoneLocked(bool async) {
   Zone* new_op_zone = nullptr;
   IOStatus s;
-  LatencyHistGuard guard(&metrics_->roll_latency_reporter_);
-  metrics_->roll_qps_reporter_.AddCount(1);
+  ZenFSMetricsLatencyGuard guard(zbd_->GetMetrics(), ZENFS_LABEL(ROLL, LATENCY),
+                                 Env::Default());
+  zbd_->GetMetrics()->ReportQPS(ZENFS_LABEL(ROLL, QPS), 1);
 
   // reserve write pointer to the old op log to close it later
   std::shared_ptr<ZenMetaLog> old_op_log = std::move(op_log_);
@@ -411,7 +410,8 @@ IOStatus ZenFS::PersistRecord(ZenMetaLog* meta_writer, std::string* record) {
 }
 
 IOStatus ZenFS::SyncFileMetadata(ZoneFile* zoneFile) {
-		LatencyHistGuard guard(&metrics_->sync_metadata_reporter_);
+  ZenFSMetricsLatencyGuard guard(
+      zbd_->GetMetrics(), ZENFS_LABEL(META_SYNC, LATENCY), Env::Default());
 
   std::string fileRecord;
   std::string output;
@@ -1167,8 +1167,8 @@ static std::string GetLogFilename(std::string bdev) {
   return ss.str();
 }
 
-Status NewZenFS(FileSystem** fs, const std::string& bdevname, std::string bytedance_tags,
-                std::shared_ptr<MetricsReporterFactory> metrics_factory) {
+Status NewZenFS(FileSystem** fs, const std::string& bdevname,
+    std::shared_ptr<ZenFSMetrics> metrics) {
   std::shared_ptr<Logger> logger;
   Status s;
 
@@ -1178,16 +1178,14 @@ Status NewZenFS(FileSystem** fs, const std::string& bdevname, std::string byteda
   } else {
     logger->SetInfoLogLevel(DEBUG_LEVEL);
   }
-  ZonedBlockDevice* zbd = new ZonedBlockDevice(bdevname, logger);
+  ZonedBlockDevice* zbd = new ZonedBlockDevice(bdevname, logger, metrics);
   IOStatus zbd_status = zbd->Open();
   if (!zbd_status.ok()) {
     Error(logger, "Failed to open zoned block device: %s", zbd_status.ToString().c_str());
     return Status::IOError(zbd_status.ToString());
   }
 
-  auto metrics = std::make_shared<BytedanceMetrics>(metrics_factory, bytedance_tags, logger);
-
-  ZenFS* zenFS = new ZenFS(zbd, FileSystem::Default(), logger, metrics);
+  ZenFS* zenFS = new ZenFS(zbd, FileSystem::Default(), logger);
   s = zenFS->Mount(false);
   if (!s.ok()) {
     delete zenFS;
@@ -1244,6 +1242,21 @@ std::map<std::string, std::string> ListZenFileSystems() {
   return zenFileSystems;
 }
 
+void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
+                             const ZenFSSnapshotOptions& options) {
+  if (options.zbd_.enabled_) {
+    snapshot.zbd_ = ZBDSnapshot(*zbd_, options);
+  }
+  if (options.zone_.enabled_) zbd_->GetZoneSnapshot(snapshot.zones_, options);
+  if (options.zone_file_.enabled_) {
+    std::lock_guard<std::mutex> file_lock(files_mtx_);
+    for (auto& file_it : files_)
+      snapshot.zone_files_.emplace_back(*file_it.second, options);
+  }
+  if (options.trigger_report_)
+    zbd_->GetMetrics()->ReportSnapshot(snapshot, options);
+}
+
 extern "C" FactoryFunc<FileSystem> zenfs_filesystem_reg;
 
 FactoryFunc<FileSystem> zenfs_filesystem_reg = ObjectLibrary::Default()->Register<FileSystem>(
@@ -1255,7 +1268,7 @@ FactoryFunc<FileSystem> zenfs_filesystem_reg = ObjectLibrary::Default()->Registe
       devID.replace(0, strlen("zenfs://"), "");
       if (devID.rfind("dev:") == 0) {
         devID.replace(0, strlen("dev:"), "");
-        s = NewZenFS(&fs, devID, "zenfs-testing", std::make_shared<ByteDanceMetricsReporterFactory>());
+        s = NewZenFS(&fs, devID, std::make_shared<NoZenFSMetrics>());
         std::cerr << "Metrics is not enabled due to using zenfs:// path" << std::endl;
         if (!s.ok()) {
           *errmsg = s.ToString();
@@ -1267,8 +1280,7 @@ FactoryFunc<FileSystem> zenfs_filesystem_reg = ObjectLibrary::Default()->Registe
         if (zenFileSystems.find(devID) == zenFileSystems.end()) {
           *errmsg = "UUID not found";
         } else {
-          s = NewZenFS(&fs, zenFileSystems[devID], "zenfs-testing",
-                       std::make_shared<ByteDanceMetricsReporterFactory>());
+          s = NewZenFS(&fs, zenFileSystems[devID], std::make_shared<NoZenFSMetrics>());
           std::cerr << "Metrics is not enabled due to using zenfs:// path" << std::endl;
           if (!s.ok()) {
             *errmsg = s.ToString();
@@ -1287,10 +1299,11 @@ FactoryFunc<FileSystem> zenfs_filesystem_reg = ObjectLibrary::Default()->Registe
 #include "rocksdb/env.h"
 
 namespace ROCKSDB_NAMESPACE {
-Status NewZenFS(FileSystem** /*fs*/, const std::string& /*bdevname*/, std::string /*bytedance_tags_*/,
-                std::shared_ptr<MetricsReporterFactory> /*metrics_reporter_factory_*/) {
+Status NewZenFS(FileSystem** fs, const std::string& bdevname,
+    std::shared_ptr<ZenFSMetrics> metrics = std::make_shared<NoZenFSMetrics>()) {
   return Status::NotSupported("Not built with ZenFS support\n");
 }
+
 std::map<std::string, std::string> ListZenFileSystems() {
   std::map<std::string, std::string> zenFileSystems;
   return zenFileSystems;

@@ -53,8 +53,7 @@ ZonedBlockDevice *zbd_open(bool readonly) {
 Status zenfs_mount(ZonedBlockDevice *zbd, ZenFS **zenFS, bool readonly, bool formating = false) {
   Status s;
   auto logger = std::make_shared<test::NullLogger>();
-  auto metrics = std::make_shared<BytedanceMetrics>(std::make_shared<ByteDanceMetricsReporterFactory>(), "", logger);
-  *zenFS = new ZenFS(zbd, FileSystem::Default(), logger, metrics);
+  *zenFS = new ZenFS(zbd, FileSystem::Default(), logger);
   s = (*zenFS)->Mount(readonly, formating);
   if (!s.ok()) {
     delete *zenFS;
@@ -97,8 +96,7 @@ int zenfs_tool_mkfs() {
   zbd = zbd_open(false);
 
   auto logger = std::make_shared<test::NullLogger>();
-  auto metrics = std::make_shared<BytedanceMetrics>(std::make_shared<ByteDanceMetricsReporterFactory>(), "", logger);
-  zenFS = new ZenFS(zbd, FileSystem::Default(), logger, metrics);
+  zenFS = new ZenFS(zbd, FileSystem::Default(), logger);
 
   if (FLAGS_aux_path.back() != '/') FLAGS_aux_path.append("/");
 

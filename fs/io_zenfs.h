@@ -106,7 +106,8 @@ class ZoneFile {
   size_t GetUniqueId(char* id, size_t max_size);
   ZonedBlockDevice* GetZbd() { return zbd_; }
 
-		std::shared_ptr<BytedanceMetrics> GetMetrics() {return zbd_->metrics_; }
+  std::shared_ptr<ZenFSMetrics> GetZBDMetrics() { return zbd_->GetMetrics(); }
+  IOType GetIOType() const { return IOType::kUnknown; }
 };
 
 class ZonedWritableFile : public FSWritableFile {
