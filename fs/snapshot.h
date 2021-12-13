@@ -93,6 +93,7 @@ class ZoneSnapshot {
 
   uint64_t ID() const { return start_; }
   uint64_t RemainingCapacity() const { return capacity_; }
+  uint64_t UsedCapacity() const { return max_capacity_ - capacity_; }   // TODO: shall cache Zone::used_capacity_ in the future.
   uint64_t MaxCapacity() const { return max_capacity_; }
   uint64_t StartPosition() const { return start_; }
   uint64_t WritePosition() const { return wp_; }
